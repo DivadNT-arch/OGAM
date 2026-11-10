@@ -1,5 +1,6 @@
 /**
- * Photo editor, phase 1: open a photo, draw a mask stroke, undo/redo it, and save a copy.
+ * Photo editor: open a photo, paint a mask with undo/redo, save a copy (phase 1), and Remove
+ * the painted area with the downloaded model, with undo/redo of the edit (phase 2).
  * Fakes only the device boundary: the PhotoEditorModule native module and the gesture library.
  * The screens, session service, mask history and geometry all run for real.
  */
@@ -46,6 +47,9 @@ const photo = {
   fileSizeBytes: 21_000_000, displayName: 'PXL_beach', durationMs: 900,
 };
 const saveCalls: any[] = [];
+const removeCalls: any[] = [];
+let lamaInstalled = false;
+const lamaInfo = () => ({ id: 'lama', name: 'LaMa inpainting (Remove)', license: 'Apache-2.0', sizeBytes: 208044816, installed: lamaInstalled, partialBytes: 0 });
 NativeModules.PhotoEditorModule = {
   pickPhoto: async () => 'content://media/external/images/media/12',
   importPhoto: async () => photo,
@@ -56,6 +60,20 @@ NativeModules.PhotoEditorModule = {
   sharePhoto: async () => true,
   takePendingShare: async () => null,
   deleteSession: async () => true,
+  deleteSessionFiles: async () => 0,
+  getEditModels: async () => [lamaInfo()],
+  downloadEditModel: async () => { lamaInstalled = true; return lamaInfo(); },
+  cancelModelDownload: async () => true,
+  deleteEditModel: async () => { lamaInstalled = false; return lamaInfo(); },
+  applyRemove: async (params: any) => {
+    removeCalls.push(params);
+    return {
+      resultPath: `/data/photo_editor/sessions/s1/${params.outName}.jpg`, previewPath: `/data/photo_editor/sessions/s1/${params.outName}_preview.jpg`,
+      loadMs: 1200, decodeMs: 900, maskMs: 5, modelMs: 3100, blendMs: 40, encodeMs: 1500, cropWidth: 1100, cropHeight: 1100,
+    };
+  },
+  cancelEdit: async () => true,
+  releaseEditEngines: async () => true,
   addListener: () => {},
   removeListeners: () => {},
 };
@@ -65,14 +83,24 @@ const { EditHomeScreen } = require('../../../src/photoEditor');
 const { PhotoEditorScreen } = require('../../../src/photoEditor/screens/PhotoEditorScreen');
 const { useTimingLog } = require('../../../src/photoEditor/services/timingLog');
 
-describe('photo editor phase 1', () => {
+function drawStroke() {
+  const draw = drawGestures[drawGestures.length - 1];
+  act(() => {
+    draw.onTouchesDown({ numberOfTouches: 1 });
+    draw.onBegin({ x: 100, y: 100 });
+    draw.onUpdate({ x: 160, y: 120 });
+    draw.onFinalize();
+  });
+}
+
+describe('photo editor', () => {
   it('opens a photo, masks it with undo/redo, and saves a new copy without touching the original', async () => {
     const alerts = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 
     const home = render(<EditHomeScreen />);
     fireEvent.press(home.getByTestId('edit-open-photo'));
     await waitFor(() => expect(home.getByText('PXL_beach')).toBeTruthy());
-    expect(home.getByText('8000 x 6000, 0 mask strokes')).toBeTruthy();
+    expect(home.getByText('8000 x 6000, 0 edits, 0 mask strokes')).toBeTruthy();
     expect(useTimingLog.getState().entries[0].operation).toBe('Open photo');
     home.unmount();
 
@@ -80,14 +108,7 @@ describe('photo editor phase 1', () => {
     expect(editor.getByText('8000 x 6000 (48.0 MP)')).toBeTruthy();
     fireEvent(editor.getByTestId('photo-editor-canvas'), 'layout', { nativeEvent: { layout: { width: 400, height: 300 } } });
 
-    // Draw one stroke with a finger: down, move, up.
-    const draw = drawGestures[drawGestures.length - 1];
-    act(() => {
-      draw.onTouchesDown({ numberOfTouches: 1 });
-      draw.onBegin({ x: 100, y: 100 });
-      draw.onUpdate({ x: 160, y: 120 });
-      draw.onFinalize();
-    });
+    drawStroke(); // one finger: down, move, up
 
     const undo = editor.getByTestId('mask-undo');
     const redo = editor.getByTestId('mask-redo');
@@ -103,5 +124,43 @@ describe('photo editor phase 1', () => {
     expect(saveCalls[0]).toEqual({
       resultPath: photo.originalPath, originalPath: photo.originalPath, keepMetadata: true, baseName: 'PXL_beach',
     });
+  });
+
+  it('removes the painted area after a one-time model download, and the edit can be undone and redone', async () => {
+    const alerts = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    const editor = render(<PhotoEditorScreen />);
+    fireEvent(editor.getByTestId('photo-editor-canvas'), 'layout', { nativeEvent: { layout: { width: 400, height: 300 } } });
+
+    // Remove with nothing painted asks for paint first.
+    fireEvent.press(editor.getByTestId('mask-clear'));
+    fireEvent.press(editor.getByTestId('ai-tool-remove'));
+    expect(alerts).toHaveBeenLastCalledWith('Remove', expect.stringContaining('Paint over'));
+
+    drawStroke();
+    // Not downloaded yet: the editor offers the 208 MB download; accept it.
+    fireEvent.press(editor.getByTestId('ai-tool-remove'));
+    const [title, , buttons] = alerts.mock.calls[alerts.mock.calls.length - 1] as any;
+    expect(title).toBe('Download the Remove model?');
+    await act(async () => { await buttons.find((b: any) => b.text === 'Download').onPress(); });
+
+    fireEvent.press(editor.getByTestId('ai-tool-remove'));
+    await waitFor(() => expect(editor.getByText('1 edit')).toBeTruthy());
+    expect(removeCalls[0].sourcePath).toBe(photo.originalPath);
+    expect(removeCalls[0].strokes[0]).toEqual(expect.objectContaining({ mode: 'brush', points: expect.any(Array) }));
+    // The mask is cleared after the edit and the timing log has the model time.
+    expect(editor.getByTestId('mask-undo').props.accessibilityState.disabled).toBe(true);
+    expect(useTimingLog.getState().entries[0]).toEqual(expect.objectContaining({ operation: 'Remove', failed: false }));
+    expect(useTimingLog.getState().entries[0].detail).toContain('model 3100 ms');
+
+    fireEvent.press(editor.getByTestId('edit-undo'));
+    expect(editor.getByText('0 edits')).toBeTruthy();
+    fireEvent.press(editor.getByTestId('edit-redo'));
+    expect(editor.getByText('1 edit')).toBeTruthy();
+
+    // A second Remove builds on the first result.
+    drawStroke();
+    fireEvent.press(editor.getByTestId('ai-tool-remove'));
+    await waitFor(() => expect(editor.getByText('2 edits')).toBeTruthy());
+    expect(removeCalls[1].sourcePath).toMatch(/result_\d+\.jpg$/);
   });
 });

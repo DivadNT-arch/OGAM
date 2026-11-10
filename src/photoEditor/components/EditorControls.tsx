@@ -40,6 +40,12 @@ interface EditorControlsProps {
   onKeepMetadata: (v: boolean) => void;
   onSave: () => void;
   onShare: () => void;
+  onRemove: () => void;
+  canUndoEdit: boolean;
+  canRedoEdit: boolean;
+  editCount: number;
+  onUndoEdit: () => void;
+  onRedoEdit: () => void;
 }
 
 const IconButton: React.FC<{
@@ -102,10 +108,21 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
   const aiTools = (
     <View style={styles.row}>
       {AI_TOOLS.map(t => (
-        <IconButton key={t.key} label={t.label} testID={`ai-tool-${t.key}`}
-          icon={<Icon name={t.icon} size={20} color={colors.textMuted} />}
-          onPress={() => Alert.alert(t.label, `${t.label} arrives in phase ${t.phase}. For now you can paint the area and save a copy.`)} />
+        <IconButton key={t.key} label={t.label} testID={`ai-tool-${t.key}`} disabled={working && t.key === 'remove'}
+          icon={<Icon name={t.icon} size={20} color={t.key === 'remove' ? colors.primary : colors.textMuted} />}
+          onPress={t.key === 'remove' ? p.onRemove
+            : () => Alert.alert(t.label, `${t.label} arrives in phase ${t.phase}.`)} />
       ))}
+    </View>
+  );
+
+  const edits = (
+    <View style={styles.row}>
+      <IconButton label="Undo edit" disabled={!p.canUndoEdit || working} onPress={p.onUndoEdit} testID="edit-undo"
+        icon={<Icon name="rotate-ccw" size={20} color={colors.text} />} />
+      <IconButton label="Redo edit" disabled={!p.canRedoEdit || working} onPress={p.onRedoEdit} testID="edit-redo"
+        icon={<Icon name="rotate-cw" size={20} color={colors.text} />} />
+      <Text style={[styles.meta, styles.editCount]}>{p.editCount} {p.editCount === 1 ? 'edit' : 'edits'}</Text>
     </View>
   );
 
@@ -140,6 +157,7 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
         {brush}
         <Text style={styles.section}>TOOLS</Text>
         {aiTools}
+        {edits}
         <Text style={styles.section}>OUTPUT</Text>
         {output}
       </ScrollView>
@@ -150,6 +168,7 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
       {maskTools}
       {brush}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>{aiTools}</ScrollView>
+      {edits}
       {output}
     </View>
   );
@@ -178,4 +197,5 @@ const createStyles = (colors: ThemeColors) => ({
   switchRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: SPACING.sm },
   body: { ...TYPOGRAPHY.bodySmall, color: colors.text },
   meta: { ...TYPOGRAPHY.meta, color: colors.textMuted },
+  editCount: { alignSelf: 'center' as const, marginLeft: SPACING.sm },
 });

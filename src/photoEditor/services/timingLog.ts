@@ -26,7 +26,7 @@ export const useTimingLog = create<TimingLogState>()(
   ),
 );
 
-function recordTiming(t: { operation: string; durationMs: number; detail?: string; failed?: boolean }): void {
+export function recordTiming(t: { operation: string; durationMs: number; detail?: string; failed?: boolean }): void {
   const entry: TimingEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date().toISOString(),

@@ -32,6 +32,44 @@ interface SaveParams {
   baseName: string;
 }
 
+export interface EditModelInfo {
+  id: string;
+  name: string;
+  license: string;
+  sizeBytes: number;
+  installed: boolean;
+  /** Bytes of an interrupted download that will be resumed. */
+  partialBytes: number;
+}
+
+export interface ModelProgress { id: string; bytesDone: number; bytesTotal: number }
+
+interface NativeStroke { mode: 'brush' | 'erase'; size: number; points: number[] }
+
+interface RegionEditParams {
+  sessionId: string;
+  /** Current full-resolution result (the edit builds on it). */
+  sourcePath: string;
+  /** The untouched original, for orientation and metadata. */
+  originalPath: string;
+  strokes: NativeStroke[];
+  /** File name (no extension) for the new result inside the session folder. */
+  outName: string;
+}
+
+export interface RegionEditResult {
+  resultPath: string;
+  previewPath: string;
+  loadMs: number;
+  decodeMs: number;
+  maskMs: number;
+  modelMs: number;
+  blendMs: number;
+  encodeMs: number;
+  cropWidth: number;
+  cropHeight: number;
+}
+
 /** Contract for the native photo editor module (Android: photoeditor/PhotoEditorModule.kt). */
 export interface PhotoEditorNative {
   pickPhoto(): Promise<string | null>;
@@ -40,9 +78,19 @@ export interface PhotoEditorNative {
   sharePhoto(uri: string): Promise<boolean>;
   takePendingShare(): Promise<string | null>;
   deleteSession(sessionId: string): Promise<boolean>;
+  deleteSessionFiles(paths: string[]): Promise<number>;
+  getEditModels(): Promise<EditModelInfo[]>;
+  downloadEditModel(id: string): Promise<EditModelInfo>;
+  cancelModelDownload(id: string): Promise<boolean>;
+  deleteEditModel(id: string): Promise<EditModelInfo>;
+  /** Remove: fills the painted area with LaMa. Rejects with EDIT_CANCELLED, LOW_MEMORY, MODEL_MISSING. */
+  applyRemove(params: RegionEditParams): Promise<RegionEditResult>;
+  cancelEdit(): Promise<boolean>;
+  releaseEditEngines(): Promise<boolean>;
 }
 
 const SHARE_RECEIVED_EVENT = 'PhotoEditorShareReceived';
+const MODEL_PROGRESS_EVENT = 'PhotoEditorModelProgress';
 
 const module: PhotoEditorNative | undefined = NativeModules.PhotoEditorModule;
 
@@ -57,5 +105,11 @@ export function photoEditorNative(): PhotoEditorNative {
 export function onShareReceived(listener: () => void): () => void {
   if (!module) return () => {};
   const sub = new NativeEventEmitter(NativeModules.PhotoEditorModule).addListener(SHARE_RECEIVED_EVENT, listener);
+  return () => sub.remove();
+}
+
+export function onModelProgress(listener: (p: ModelProgress) => void): () => void {
+  if (!module) return () => {};
+  const sub = new NativeEventEmitter(NativeModules.PhotoEditorModule).addListener(MODEL_PROGRESS_EVENT, listener);
   return () => sub.remove();
 }

@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
@@ -9,6 +9,8 @@ import { SPACING, TYPOGRAPHY } from '../../constants';
 import { MaskCanvas } from '../components/MaskCanvas';
 import { EditorControls } from '../components/EditorControls';
 import { editSession, useEditorStore } from '../services/editSession';
+import { editModels, useEditModels } from '../services/editModels';
+import { Button } from '../../components';
 
 /** Inner (unfolded) screen and tablets get the side panel; the cover screen gets a bottom bar. */
 const WIDE_LAYOUT_MIN_WIDTH = 600;
@@ -24,6 +26,28 @@ export const PhotoEditorScreen: React.FC = () => {
   const keepMetadata = useEditorStore(s => s.keepMetadata);
   const busy = useEditorStore(s => s.busy);
   const [comparing, setComparing] = useState(false);
+  const downloading = useEditModels(s => s.downloading.lama);
+  useEffect(() => { editModels.refresh().catch(() => undefined); }, []);
+
+  const remove = useCallback(async () => {
+    const current = useEditorStore.getState().session;
+    if (!current?.mask.strokes.some(st => st.mode === 'brush')) {
+      Alert.alert('Remove', 'Paint over what you want to remove first, then tap Remove.');
+      return;
+    }
+    if (!editModels.isInstalled('lama')) {
+      Alert.alert('Download the Remove model?', 'Remove needs the LaMa model (208 MB). It downloads once and then works offline.', [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Download', onPress: () => { editModels.download('lama'); } },
+      ]);
+      return;
+    }
+    try {
+      await editSession.remove();
+    } catch (e: any) {
+      Alert.alert('Remove failed', e?.message ?? String(e));
+    }
+  }, []);
 
   const save = useCallback(async () => {
     try {
@@ -51,7 +75,7 @@ export const PhotoEditorScreen: React.FC = () => {
 
   const { photo, mask } = session;
   const wide = width >= WIDE_LAYOUT_MIN_WIDTH;
-  // Phase 1 has no edits yet, so "before" shows the same picture; the mask is hidden.
+  // Press-and-hold shows the original photo, without the mask.
   const imageUri = comparing ? photo.previewPath : session.resultPreviewPath;
 
   const controls = (
@@ -63,7 +87,9 @@ export const PhotoEditorScreen: React.FC = () => {
       onTool={editSession.setTool} onBrushSize={editSession.setBrushSize}
       onUndo={editSession.undo} onRedo={editSession.redo} onClear={editSession.clearMask}
       onCompare={setComparing} onKeepMetadata={editSession.setKeepMetadata}
-      onSave={save} onShare={share}
+      onSave={save} onShare={share} onRemove={remove}
+      canUndoEdit={session.history.length > 0} canRedoEdit={session.redoSteps.length > 0}
+      editCount={session.history.length} onUndoEdit={editSession.undoEdit} onRedoEdit={editSession.redoEdit}
     />
   );
 
@@ -89,6 +115,20 @@ export const PhotoEditorScreen: React.FC = () => {
             strokes={mask.strokes} tool={tool} brushSize={brushSize}
             hideMask={comparing} onStroke={editSession.addStroke}
           />
+          {busy === 'removing' && (
+            <View style={styles.overlay} testID="edit-progress">
+              <ActivityIndicator color={colors.primary} />
+              <Text style={styles.body}>Removing</Text>
+              <Text style={styles.meta}>Runs on this phone. Usually a few seconds.</Text>
+              <Button title="Cancel" variant="outline" size="small" onPress={() => { editSession.cancelEdit(); }}
+                testID="edit-cancel" />
+            </View>
+          )}
+          {downloading !== undefined && (
+            <View style={styles.banner}>
+              <Text style={styles.meta}>Downloading the Remove model: {Math.round(downloading * 100)}%</Text>
+            </View>
+          )}
         </View>
         {controls}
       </View>
@@ -110,5 +150,13 @@ const createStyles = (colors: ThemeColors) => ({
   link: { ...TYPOGRAPHY.body, color: colors.primary, marginTop: SPACING.md },
   rowBody: { flex: 1, flexDirection: 'row' as const },
   columnBody: { flex: 1, flexDirection: 'column' as const },
+  overlay: {
+    position: 'absolute' as const, left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center' as const,
+    justifyContent: 'center' as const, gap: SPACING.sm, backgroundColor: colors.overlay,
+  },
+  banner: {
+    position: 'absolute' as const, left: SPACING.md, right: SPACING.md, top: SPACING.md, padding: SPACING.sm,
+    borderRadius: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+  },
   empty: { flex: 1, alignItems: 'center' as const, justifyContent: 'center' as const },
 });

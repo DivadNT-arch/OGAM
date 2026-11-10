@@ -8,6 +8,7 @@ import type { ThemeColors } from '../../theme';
 import { SPACING, TYPOGRAPHY } from '../../constants';
 import { editSession, useEditorStore } from '../services/editSession';
 import { PHOTO_EDITOR_ROUTE, PHOTO_EDITOR_TIMING_ROUTE } from '../routes';
+import { EditModelsCard } from '../components/EditModelsCard';
 
 /** The Edit tab: open a photo, continue the current edit, or look at timings. */
 export const EditHomeScreen: React.FC = () => {
@@ -55,7 +56,7 @@ export const EditHomeScreen: React.FC = () => {
             <Text style={styles.subtitle}>Current edit</Text>
             <Text style={styles.body} numberOfLines={1}>{session.photo.displayName}</Text>
             <Text style={styles.meta}>
-              {session.photo.width} x {session.photo.height}, {session.mask.strokes.length} mask strokes
+              {session.photo.width} x {session.photo.height}, {session.history.length} edits, {session.mask.strokes.length} mask strokes
             </Text>
             <View style={styles.row}>
               <Button title="Continue" onPress={() => navigation.navigate(PHOTO_EDITOR_ROUTE)} size="small"
@@ -64,6 +65,8 @@ export const EditHomeScreen: React.FC = () => {
             </View>
           </Card>
         )}
+
+        <EditModelsCard />
 
         <Button title="Edit timing log" variant="outline" size="small"
           onPress={() => navigation.navigate(PHOTO_EDITOR_TIMING_ROUTE)} testID="edit-timing-log" />
