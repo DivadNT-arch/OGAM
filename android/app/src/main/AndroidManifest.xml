@@ -36,6 +36,9 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
+    <!-- Photo editor: read the original photo's location so a saved copy keeps it -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
     <application
       android:name=".MainApplication"
       android:label="@string/app_name"
@@ -73,6 +76,25 @@
             <category android:name="android.intent.category.DEFAULT" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="offgrid" android:host="oauth" />
+        </intent-filter>
+      </activity>
+
+      <!-- Photo editor: "Edit with Off Grid" in the share sheet and in galleries' Edit menu -->
+      <activity
+        android:name=".photoeditor.EditShareActivity"
+        android:label="Edit with Off Grid"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:excludeFromRecents="true"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.intent.action.SEND" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="image/*" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.EDIT" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="image/*" />
         </intent-filter>
       </activity>
 
