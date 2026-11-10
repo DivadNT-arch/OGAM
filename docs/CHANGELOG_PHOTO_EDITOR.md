@@ -2,6 +2,25 @@
 
 Running log for the photo-editor fork (branch `feature/photo-editor`, based on upstream v0.0.103).
 
+## Phase 2b: sharper Remove on large areas (2026-11-10)
+
+**The problem:** removing a folding chair (about a third of a 12 MP photo, over striped carpet) left a smeared ghost.
+
+**What caused it** (tested on David's photo at full 3000x4000 in the cloud container):
+1. The painted area's crop was 1588x3490 and was squashed into a 512x512 square: shrunk 6.5x and stretched out of shape.
+2. Any part of the object left unpainted (chair legs, the rim) gets continued by LaMa into the filled area.
+3. A 512 fill blown back up to full size is much smoother than the real texture.
+
+**Fixes**
+- The crop keeps its shape. It's scaled so its longest side fits the model, and the rest of the square is filled with mirrored image instead of stretching.
+- Paint is grown by 1.5% of the crop before the model runs, to catch leftover edges.
+- **LaMa 1024:** the same big-lama weights, exported at 1024x1024 with the Carve-Photos/lama recipe. The same export at 512 matches the published Carve file (max difference 0.002 on a 0..255 scale). It's hosted on this fork's `editing-models` branch, split into three parts under GitHub's 100 MB limit, and the app joins them and checks the SHA-256. Crops longer than 900 px use the 1024 model when it's downloaded; smaller ones keep the faster 512 model. Measured on the 4-core container: 9–11 s and a 2.2 GB peak per run (it was 2 s for 512).
+- **Tone and grain matching:** the fill's average colour is moved towards the surroundings' (only for shifts up to 24 levels, so real content changes are left alone). Fine grain is added back at 60% of the texture difference between the fill and its surroundings.
+- Hint text: "Paint the whole object, its shadow and a little margin."
+- Side panel layout fix: Android ScrollViews grow by default, so the panel took more than half the inner screen.
+
+**Result on the chair test:** with the whole chair painted, it's gone at normal viewing size. Up close the carpet is softer than the original, and the carpet tiles' stripe pattern doesn't continue across the filled area. That's LaMa's limit for an area this large.
+
 ## Phase 2: Remove (2026-11-10)
 
 **What was built**
