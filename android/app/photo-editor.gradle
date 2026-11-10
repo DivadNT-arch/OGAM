@@ -1,0 +1,14 @@
+// Photo editor fork: native dependencies, kept out of build.gradle so upstream merges stay simple.
+dependencies {
+    // ONNX Runtime (MIT) runs the LaMa inpainting model for the Remove tool.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.1")
+}
+
+android {
+    packaging {
+        jniLibs {
+            // The editor targets arm64 phones; drop ONNX Runtime's other ABIs (about 100 MB).
+            excludes += ["lib/armeabi-v7a/libonnxruntime*.so", "lib/x86/libonnxruntime*.so", "lib/x86_64/libonnxruntime*.so"]
+        }
+    }
+}
