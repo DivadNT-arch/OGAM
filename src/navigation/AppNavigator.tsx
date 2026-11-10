@@ -45,6 +45,7 @@ import {
   MainTabParamList,
 } from './types';
 import { useRegisteredScreens } from './screenRegistry';
+import { EditHomeScreen, PhotoEditorShareReceiver, isPhotoEditorAvailable } from '../photoEditor';
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -52,6 +53,7 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 // Animated tab icon with scale spring on focus
 const TAB_ICON_MAP: Record<string, string> = {
   HomeTab: 'home',
+  EditTab: 'image',
   ChatsTab: 'message-circle',
   ProjectsTab: 'folder',
   ModelsTab: 'cpu',
@@ -114,6 +116,7 @@ const MainTabs: React.FC = () => {
 
   return (
     <View style={mainTabsStyles.container}>
+      {isPhotoEditorAvailable && <PhotoEditorShareReceiver />}
       <Tab.Navigator
         backBehavior="history"
         screenOptions={({ route }) => ({
@@ -148,6 +151,16 @@ const MainTabs: React.FC = () => {
             tabPress: () => { triggerHaptic('selection'); },
           })}
         />
+        {isPhotoEditorAvailable && (
+          <Tab.Screen
+            name="EditTab"
+            component={EditHomeScreen}
+            options={{ tabBarLabel: 'Edit', tabBarButtonTestID: 'edit-tab' }}
+            listeners={() => ({
+              tabPress: () => { triggerHaptic('selection'); },
+            })}
+          />
+        )}
         <Tab.Screen
           name="ChatsTab"
           component={ChatsListScreen}

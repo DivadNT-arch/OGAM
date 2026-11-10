@@ -29,6 +29,7 @@ export type RootStackParamList = {
 // Tab navigator — simple, no sub-stacks
 export type MainTabParamList = {
   HomeTab: undefined;
+  EditTab: undefined; // photo editor fork
   ChatsTab: undefined;
   ProjectsTab: undefined;
   ModelsTab: { initialTab?: 'text' | 'image' | 'voice' | 'transcription'; repairModelId?: string; initialSearchQuery?: string } | undefined;
