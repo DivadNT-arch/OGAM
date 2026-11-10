@@ -67,10 +67,12 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
   const working = p.busy != null;
 
   const maskTools = (
+    <>
+    <Text style={styles.meta}>Paint over what you want to change. Unpaint removes paint, not parts of the photo.</Text>
     <View style={styles.row}>
-      <IconButton label="Brush" active={p.tool === 'brush'} onPress={() => p.onTool('brush')} testID="tool-brush"
+      <IconButton label="Paint" active={p.tool === 'brush'} onPress={() => p.onTool('brush')} testID="tool-brush"
         icon={<MaterialIcon name="brush" size={20} color={tint(p.tool === 'brush')} />} />
-      <IconButton label="Erase" active={p.tool === 'erase'} onPress={() => p.onTool('erase')} testID="tool-erase"
+      <IconButton label="Unpaint" active={p.tool === 'erase'} onPress={() => p.onTool('erase')} testID="tool-erase"
         icon={<MaterialIcon name="auto-fix-off" size={20} color={tint(p.tool === 'erase')} />} />
       <IconButton label="Move" active={p.tool === 'move'} onPress={() => p.onTool('move')} testID="tool-move"
         icon={<Icon name="move" size={20} color={tint(p.tool === 'move')} />} />
@@ -81,6 +83,7 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
       <IconButton label="Clear" disabled={!p.canClear} onPress={p.onClear} testID="mask-clear"
         icon={<Icon name="trash-2" size={20} color={colors.text} />} />
     </View>
+    </>
   );
 
   const brush = (
@@ -101,7 +104,7 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
       {AI_TOOLS.map(t => (
         <IconButton key={t.key} label={t.label} testID={`ai-tool-${t.key}`}
           icon={<Icon name={t.icon} size={20} color={colors.textMuted} />}
-          onPress={() => Alert.alert(t.label, `${t.label} arrives in phase ${t.phase}. For now you can draw and save the mask area.`)} />
+          onPress={() => Alert.alert(t.label, `${t.label} arrives in phase ${t.phase}. For now you can paint the area and save a copy.`)} />
       ))}
     </View>
   );
