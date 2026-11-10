@@ -28,14 +28,14 @@ data class EditOutput(
  */
 object EditRenderer {
     private const val JPEG_QUALITY = 95
-    /** Rough peak for the model run (weights + activations) in bytes. */
-    private const val MODEL_HEADROOM = 900L * 1024 * 1024
+    /** Rough peak memory for a model run (weights + activations), by model input size. */
+    fun modelHeadroom(inputSize: Int): Long = if (inputSize >= 1024) 2600L shl 20 else 900L shl 20
 
-    fun checkMemory(context: Context, width: Int, height: Int) {
+    fun checkMemory(context: Context, width: Int, height: Int, modelHeadroom: Long) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
         // The full photo bitmap twice over (decode + working copies) plus the model.
-        val needed = width.toLong() * height * 4 * 2 + MODEL_HEADROOM
+        val needed = width.toLong() * height * 4 * 2 + modelHeadroom
         if (info.availMem - info.threshold < needed) {
             throw LowMemoryException(
                 "Not enough free memory for this edit: it needs about ${needed / (1 shl 20)} MB, " +
@@ -46,13 +46,13 @@ object EditRenderer {
 
     fun applyRegion(
         context: Context, sourcePath: String, originalPath: String, strokes: List<Stroke>,
-        outDir: File, outName: String, engineSize: Int, model: (Bitmap, Bitmap) -> Bitmap,
+        outDir: File, outName: String, maxInputSize: Int, sizeFor: (Int) -> Int, model: (Bitmap, Bitmap) -> Bitmap,
     ): EditOutput {
         val original = File(originalPath)
         val orientation = PhotoImporter.orientationOf(original)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(sourcePath, bounds)
-        checkMemory(context, bounds.outWidth, bounds.outHeight)
+        checkMemory(context, bounds.outWidth, bounds.outHeight, modelHeadroom(maxInputSize))
 
         var t = System.currentTimeMillis()
         val image = BitmapFactory.decodeFile(sourcePath, BitmapFactory.Options().apply {
@@ -61,7 +61,7 @@ object EditRenderer {
         val decodeMs = System.currentTimeMillis() - t
         try {
             val map = OrientationMap(image.width, image.height, orientation)
-            val result = RegionPipeline.process(image, strokes, map, engineSize, model)
+            val result = RegionPipeline.process(image, strokes, map, sizeFor, model)
 
             t = System.currentTimeMillis()
             outDir.mkdirs()

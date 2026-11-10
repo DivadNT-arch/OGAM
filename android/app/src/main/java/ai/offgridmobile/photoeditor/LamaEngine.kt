@@ -10,11 +10,10 @@ import java.nio.FloatBuffer
 
 /**
  * LaMa inpainting through ONNX Runtime on the CPU. Input: RGB 0..1 and a mask (1 = fill),
- * both 512x512 NCHW. Output: RGB 0..255. The session stays loaded between edits and is
+ * both [size]x[size] NCHW (512 or 1024, fixed per model file). Output: RGB 0..255. The session stays loaded between edits and is
  * released with [close] (on unload or memory pressure).
  */
-class LamaEngine(private val modelFile: File, private val threads: Int) {
-    companion object { const val SIZE = 512 }
+class LamaEngine(private val modelFile: File, private val threads: Int, val size: Int) {
 
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession = env.createSession(modelFile.absolutePath, OrtSession.SessionOptions().apply {
@@ -27,6 +26,7 @@ class LamaEngine(private val modelFile: File, private val threads: Int) {
     fun cancel() { runOptions?.setTerminate(true) }
 
     fun inpaint(image: Bitmap, mask: Bitmap): Bitmap {
+        val SIZE = size
         require(image.width == SIZE && image.height == SIZE && mask.width == SIZE && mask.height == SIZE)
         val n = SIZE * SIZE
         val px = IntArray(n).also { image.getPixels(it, 0, SIZE, 0, 0, SIZE, SIZE) }

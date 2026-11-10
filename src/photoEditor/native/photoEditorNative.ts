@@ -37,6 +37,8 @@ export interface EditModelInfo {
   name: string;
   license: string;
   sizeBytes: number;
+  /** Model input size in pixels (512 or 1024). */
+  inputSize: number;
   installed: boolean;
   /** Bytes of an interrupted download that will be resumed. */
   partialBytes: number;
@@ -61,6 +63,8 @@ export interface RegionEditResult {
   resultPath: string;
   previewPath: string;
   loadMs: number;
+  /** Which model ran: 512 or 1024. */
+  modelSize: number;
   decodeMs: number;
   maskMs: number;
   modelMs: number;

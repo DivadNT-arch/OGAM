@@ -48,8 +48,8 @@ const photo = {
 };
 const saveCalls: any[] = [];
 const removeCalls: any[] = [];
-let lamaInstalled = false;
-const lamaInfo = () => ({ id: 'lama', name: 'LaMa inpainting (Remove)', license: 'Apache-2.0', sizeBytes: 208044816, installed: lamaInstalled, partialBytes: 0 });
+const installed: Record<string, boolean> = { lama: false, lama1024: false };
+const modelInfo = (id: string) => ({ id, name: id, license: 'Apache-2.0', sizeBytes: 208044816, inputSize: id === 'lama' ? 512 : 1024, installed: installed[id], partialBytes: 0 });
 NativeModules.PhotoEditorModule = {
   pickPhoto: async () => 'content://media/external/images/media/12',
   importPhoto: async () => photo,
@@ -61,15 +61,15 @@ NativeModules.PhotoEditorModule = {
   takePendingShare: async () => null,
   deleteSession: async () => true,
   deleteSessionFiles: async () => 0,
-  getEditModels: async () => [lamaInfo()],
-  downloadEditModel: async () => { lamaInstalled = true; return lamaInfo(); },
+  getEditModels: async () => [modelInfo('lama'), modelInfo('lama1024')],
+  downloadEditModel: async (id: string) => { installed[id] = true; return modelInfo(id); },
   cancelModelDownload: async () => true,
-  deleteEditModel: async () => { lamaInstalled = false; return lamaInfo(); },
+  deleteEditModel: async (id: string) => { installed[id] = false; return modelInfo(id); },
   applyRemove: async (params: any) => {
     removeCalls.push(params);
     return {
       resultPath: `/data/photo_editor/sessions/s1/${params.outName}.jpg`, previewPath: `/data/photo_editor/sessions/s1/${params.outName}_preview.jpg`,
-      loadMs: 1200, decodeMs: 900, maskMs: 5, modelMs: 3100, blendMs: 40, encodeMs: 1500, cropWidth: 1100, cropHeight: 1100,
+      loadMs: 1200, modelSize: 1024, decodeMs: 900, maskMs: 5, modelMs: 3100, blendMs: 40, encodeMs: 1500, cropWidth: 1100, cropHeight: 1100,
     };
   },
   cancelEdit: async () => true,
@@ -140,8 +140,9 @@ describe('photo editor', () => {
     // Not downloaded yet: the editor offers the 208 MB download; accept it.
     fireEvent.press(editor.getByTestId('ai-tool-remove'));
     const [title, , buttons] = alerts.mock.calls[alerts.mock.calls.length - 1] as any;
-    expect(title).toBe('Download the Remove model?');
-    await act(async () => { await buttons.find((b: any) => b.text === 'Download').onPress(); });
+    expect(title).toBe('Download the Remove models?');
+    await act(async () => { await buttons.find((b: any) => b.text === 'Both').onPress(); });
+    expect(installed).toEqual({ lama: true, lama1024: true });
 
     fireEvent.press(editor.getByTestId('ai-tool-remove'));
     await waitFor(() => expect(editor.getByText('1 edit')).toBeTruthy());
@@ -150,7 +151,7 @@ describe('photo editor', () => {
     // The mask is cleared after the edit and the timing log has the model time.
     expect(editor.getByTestId('mask-undo').props.accessibilityState.disabled).toBe(true);
     expect(useTimingLog.getState().entries[0]).toEqual(expect.objectContaining({ operation: 'Remove', failed: false }));
-    expect(useTimingLog.getState().entries[0].detail).toContain('model 3100 ms');
+    expect(useTimingLog.getState().entries[0].detail).toContain('LaMa 1024 3100 ms');
 
     fireEvent.press(editor.getByTestId('edit-undo'));
     expect(editor.getByText('0 edits')).toBeTruthy();

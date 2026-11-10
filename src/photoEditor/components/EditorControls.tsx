@@ -74,7 +74,7 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
 
   const maskTools = (
     <>
-    <Text style={styles.meta}>Paint over what you want to change. Unpaint removes paint, not parts of the photo.</Text>
+    <Text style={styles.meta}>Paint the whole object, its shadow and a little margin. Unpaint removes paint, not parts of the photo.</Text>
     <View style={styles.row}>
       <IconButton label="Paint" active={p.tool === 'brush'} onPress={() => p.onTool('brush')} testID="tool-brush"
         icon={<MaterialIcon name="brush" size={20} color={tint(p.tool === 'brush')} />} />

@@ -26,7 +26,7 @@ export const PhotoEditorScreen: React.FC = () => {
   const keepMetadata = useEditorStore(s => s.keepMetadata);
   const busy = useEditorStore(s => s.busy);
   const [comparing, setComparing] = useState(false);
-  const downloading = useEditModels(s => s.downloading.lama);
+  const downloading = useEditModels(s => s.downloading.lama ?? s.downloading.lama1024);
   useEffect(() => { editModels.refresh().catch(() => undefined); }, []);
 
   const remove = useCallback(async () => {
@@ -35,11 +35,14 @@ export const PhotoEditorScreen: React.FC = () => {
       Alert.alert('Remove', 'Paint over what you want to remove first, then tap Remove.');
       return;
     }
-    if (!editModels.isInstalled('lama')) {
-      Alert.alert('Download the Remove model?', 'Remove needs the LaMa model (208 MB). It downloads once and then works offline.', [
-        { text: 'Not now', style: 'cancel' },
-        { text: 'Download', onPress: () => { editModels.download('lama'); } },
-      ]);
+    if (!editModels.isInstalled('lama') && !editModels.isInstalled('lama1024')) {
+      Alert.alert('Download the Remove models?',
+        'Remove runs LaMa on this phone. The 512 model (208 MB) is fast for small areas; the 1024 model (208 MB) keeps '
+        + 'large areas sharper. They download once and then work offline.', [
+          { text: 'Not now', style: 'cancel' },
+          { text: '512 only', onPress: () => { editModels.download('lama'); } },
+          { text: 'Both', onPress: () => { editModels.download('lama').then(() => editModels.download('lama1024')); } },
+        ]);
       return;
     }
     try {
@@ -119,7 +122,7 @@ export const PhotoEditorScreen: React.FC = () => {
             <View style={styles.overlay} testID="edit-progress">
               <ActivityIndicator color={colors.primary} />
               <Text style={styles.body}>Removing</Text>
-              <Text style={styles.meta}>Runs on this phone. Usually a few seconds.</Text>
+              <Text style={styles.meta}>Runs on this phone. Small areas take seconds, large ones up to a minute.</Text>
               <Button title="Cancel" variant="outline" size="small" onPress={() => { editSession.cancelEdit(); }}
                 testID="edit-cancel" />
             </View>

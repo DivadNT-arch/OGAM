@@ -10,30 +10,56 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** One downloadable piece of a model file (large files are split under GitHub's 100 MB limit). */
+data class ModelPart(val url: String, val sizeBytes: Long)
+
 /** A model file the editor downloads once and then uses offline. */
 data class EditModel(
     val id: String,
     val name: String,
     val license: String,
     val fileName: String,
-    /** Pinned to a commit so the file can't change under us; checked against [sha256]. */
-    val url: String,
+    /** Pinned to commits so the file can't change under us; the joined file is checked against [sha256]. */
+    val parts: List<ModelPart>,
     val sha256: String,
-    val sizeBytes: Long,
-)
+    /** Model input size in pixels (square). */
+    val inputSize: Int,
+) {
+    val sizeBytes: Long get() = parts.sumOf { it.sizeBytes }
+}
 
 object EditModels {
     val LAMA = EditModel(
         id = "lama",
-        name = "LaMa inpainting (Remove)",
+        name = "LaMa 512 (Remove, fast)",
         license = "Apache-2.0",
         fileName = "lama_fp32.onnx",
-        url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
+        parts = listOf(ModelPart(
+            "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
+            208_044_816L,
+        )),
         sha256 = "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
-        sizeBytes = 208_044_816L,
+        inputSize = 512,
     )
 
-    val ALL = listOf(LAMA)
+    /** Same big-lama weights exported at 1024 (see the editing-models branch README). Sharper on large areas. */
+    private const val LAMA_1024_BASE =
+        "https://raw.githubusercontent.com/DivadNT-arch/OGAM/e22f7f3e90f820708b66d2bef3e1e97eaae5b852/lama1024/lama_1024_fp32.onnx.part"
+    val LAMA_1024 = EditModel(
+        id = "lama1024",
+        name = "LaMa 1024 (Remove, large areas)",
+        license = "Apache-2.0",
+        fileName = "lama_1024_fp32.onnx",
+        parts = listOf(
+            ModelPart("${LAMA_1024_BASE}0", 70_000_000L),
+            ModelPart("${LAMA_1024_BASE}1", 70_000_000L),
+            ModelPart("${LAMA_1024_BASE}2", 67_594_478L),
+        ),
+        sha256 = "923d45aa2dcd98d43b98597c88118dc6bb8a0bccec0b63a6dd39df45b1c9fd4c",
+        inputSize = 1024,
+    )
+
+    val ALL = listOf(LAMA, LAMA_1024)
 
     fun byId(id: String): EditModel = ALL.firstOrNull { it.id == id } ?: throw IllegalArgumentException("Unknown model $id")
 
@@ -59,32 +85,44 @@ object EditModels {
         val flag = AtomicBoolean(false).also { cancelled[model.id] = it }
         val target = file(context, model)
         val part = File(target.path + ".part")
+        val total = model.sizeBytes
         try {
-            var done = part.length().coerceAtMost(model.sizeBytes)
-            if (done < model.sizeBytes) {
-                val request = Request.Builder().url(model.url).apply { if (done > 0) header("Range", "bytes=$done-") }.build()
-                http.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) throw IllegalStateException("Download failed (HTTP ${response.code}).")
-                    if (done > 0 && response.code != 206) { done = 0; part.delete() } // server ignored the range
-                    val body = response.body ?: throw IllegalStateException("Download failed (empty response).")
-                    FileOutputStream(part, done > 0).use { out ->
-                        body.byteStream().use { input ->
-                            val buf = ByteArray(1 shl 16)
-                            var last = 0L
-                            while (true) {
-                                if (flag.get()) throw InterruptedException("Download cancelled.")
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                                done += n
-                                val now = System.currentTimeMillis()
-                                if (now - last > 250) { onProgress(done, model.sizeBytes); last = now }
+            var done = part.length().coerceAtMost(total)
+            var partStart = 0L
+            for (piece in model.parts) {
+                val partEnd = partStart + piece.sizeBytes
+                if (done < partEnd) {
+                    val offset = done - partStart
+                    val request = Request.Builder().url(piece.url).apply { if (offset > 0) header("Range", "bytes=$offset-") }.build()
+                    http.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) throw IllegalStateException("Download failed (HTTP ${response.code}).")
+                        if (offset > 0 && response.code != 206) {
+                            // The server ignored the range: rewind this piece.
+                            java.io.RandomAccessFile(part, "rw").use { it.setLength(partStart) }
+                            done = partStart
+                        }
+                        val body = response.body ?: throw IllegalStateException("Download failed (empty response).")
+                        FileOutputStream(part, true).use { out ->
+                            body.byteStream().use { input ->
+                                val buf = ByteArray(1 shl 16)
+                                var last = 0L
+                                while (true) {
+                                    if (flag.get()) throw InterruptedException("Download cancelled.")
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    out.write(buf, 0, n)
+                                    done += n
+                                    val now = System.currentTimeMillis()
+                                    if (now - last > 250) { onProgress(done, total); last = now }
+                                }
                             }
                         }
                     }
+                    if (done != partEnd) throw IllegalStateException("Download was cut off. Tap Resume to continue.")
                 }
+                partStart = partEnd
             }
-            onProgress(done, model.sizeBytes)
+            onProgress(done, total)
             if (sha256(part) != model.sha256) {
                 part.delete()
                 throw IllegalStateException("The downloaded file is damaged. Please try again.")

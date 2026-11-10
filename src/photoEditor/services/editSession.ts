@@ -168,7 +168,7 @@ export const editSession = {
         durationMs: Date.now() - started,
         detail: [
           `crop ${result.cropWidth}x${result.cropHeight}`,
-          `model ${result.modelMs} ms`,
+          `LaMa ${result.modelSize} ${result.modelMs} ms`,
           result.loadMs ? `model load ${result.loadMs} ms` : null,
           `decode ${result.decodeMs} ms`, `blend ${result.blendMs} ms`, `encode ${result.encodeMs} ms`,
         ].filter(Boolean).join(', '),

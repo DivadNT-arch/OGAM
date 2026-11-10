@@ -31,6 +31,8 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         const val EVENT_MODEL_PROGRESS = "PhotoEditorModelProgress"
         private const val PICK_REQUEST = 42_017
         private var active: WeakReference<PhotoEditorModule>? = null
+        /** Crops with a longer side than this use the 1024 model if it is downloaded. */
+        private const val LARGE_AREA_PX = 900
 
         /** Called by [EditShareActivity] when a photo arrives while the app is running. */
         fun notifyShareReceived() {
@@ -43,6 +45,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     private val edits = Executors.newSingleThreadExecutor()
     private val downloads = Executors.newSingleThreadExecutor()
     private var pickPromise: SafePromise? = null
+    /** Loaded LaMa engines by input size. Only one is kept at a time to bound memory. */
     @Volatile private var lama: LamaEngine? = null
     @Volatile private var editCancelled = false
 
@@ -184,6 +187,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         putString("name", m.name)
         putString("license", m.license)
         putDouble("sizeBytes", m.sizeBytes.toDouble())
+        putInt("inputSize", m.inputSize)
         putBoolean("installed", EditModels.isInstalled(reactApplicationContext, m))
         val part = File(EditModels.file(reactApplicationContext, m).path + ".part")
         putDouble("partialBytes", part.length().toDouble())
@@ -226,7 +230,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         edits.execute {
             try {
                 val model = EditModels.byId(id)
-                if (model.id == EditModels.LAMA.id) { lama?.close(); lama = null }
+                if (lama != null && model.inputSize == lama?.size) { lama?.close(); lama = null }
                 EditModels.delete(reactApplicationContext, model)
                 safe.resolve(modelInfo(model))
             } catch (e: Exception) {
@@ -259,20 +263,31 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         editCancelled = false
         edits.execute {
             try {
-                val file = EditModels.file(reactApplicationContext, EditModels.LAMA)
-                if (!EditModels.isInstalled(reactApplicationContext, EditModels.LAMA)) {
-                    return@execute safe.reject("MODEL_MISSING", "Download the Remove model first (Edit tab, Editing models).")
+                val ctx = reactApplicationContext
+                val installed = listOf(EditModels.LAMA, EditModels.LAMA_1024).filter { EditModels.isInstalled(ctx, it) }
+                if (installed.isEmpty()) {
+                    return@execute safe.reject("MODEL_MISSING", "Download a Remove model first (Edit tab, Editing models).")
+                }
+                // Large areas go to the 1024 model when it is there (half the downscaling), small ones to 512 (faster).
+                val sizeFor: (Int) -> Int = { longSide ->
+                    val wantLarge = longSide > LARGE_AREA_PX
+                    (installed.firstOrNull { if (wantLarge) it.inputSize == 1024 else it.inputSize == 512 } ?: installed.first()).inputSize
                 }
                 var loadMs = 0L
-                val engine = lama ?: run {
-                    val t = System.currentTimeMillis()
-                    LamaEngine(file, threads = 4).also { lama = it; loadMs = System.currentTimeMillis() - t }
-                }
-                val dir = File(PhotoImporter.sessionsRoot(reactApplicationContext), sessionId)
+                var usedSize = 0
+                val dir = File(PhotoImporter.sessionsRoot(ctx), sessionId)
                 val out = EditRenderer.applyRegion(
-                    reactApplicationContext, sourcePath, originalPath, strokes, dir, outName, LamaEngine.SIZE,
+                    ctx, sourcePath, originalPath, strokes, dir, outName, installed.maxOf { it.inputSize }, sizeFor,
                 ) { crop, mask ->
                     if (editCancelled) throw InterruptedException("Cancelled.")
+                    val model = installed.first { it.inputSize == crop.width }
+                    val engine = lama?.takeIf { it.size == model.inputSize } ?: run {
+                        lama?.close(); lama = null
+                        val t = System.currentTimeMillis()
+                        LamaEngine(EditModels.file(ctx, model), threads = 4, size = model.inputSize)
+                            .also { lama = it; loadMs = System.currentTimeMillis() - t }
+                    }
+                    usedSize = model.inputSize
                     engine.inpaint(crop, mask)
                 }
                 if (editCancelled) { File(out.resultPath).delete(); File(out.previewPath).delete(); throw InterruptedException("Cancelled.") }
@@ -280,6 +295,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
                     putString("resultPath", out.resultPath)
                     putString("previewPath", out.previewPath)
                     putDouble("loadMs", loadMs.toDouble())
+                    putInt("modelSize", usedSize)
                     putDouble("decodeMs", out.decodeMs.toDouble())
                     putDouble("maskMs", out.maskMs.toDouble())
                     putDouble("modelMs", out.modelMs.toDouble())
