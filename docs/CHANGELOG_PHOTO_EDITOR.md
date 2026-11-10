@@ -2,6 +2,37 @@
 
 Running log for the photo-editor fork (branch `feature/photo-editor`, based on upstream v0.0.103).
 
+## Phase 2: Remove (2026-11-10)
+
+**What was built**
+- **Remove** tool: paint over something, tap Remove, and LaMa fills the area in to match its surroundings. It runs on the phone's CPU through ONNX Runtime and works in airplane mode once the model is downloaded.
+- **Editing models** card on the Edit tab. LaMa is 208 MB, Apache-2.0, and pinned to one Hugging Face commit. The download is SHA-256 checked, resumes if it was interrupted, and can be cancelled or deleted. The card shows storage used.
+- **Edit history:** edits stack (each Remove builds on the previous result). **Undo edit** and **Redo edit** step through them. "Hold: before" shows the original.
+- A progress overlay with **Cancel**, which stops the model run mid-way through ONNX Runtime's terminate flag.
+- Low memory: if the phone doesn't have enough free memory for an edit, the app unloads the chat and image models (they reload when next used) and tries once more. If it still can't fit, it shows a clear message instead of crashing.
+- The timing log records each Remove with its breakdown: model load, model run, decode, blend, encode and crop size.
+
+**How it works: crop, process, paste back** (`RegionPipeline.kt`, shared by later tools)
+1. Bounding box of the paint, computed from the strokes (no full-size mask is drawn).
+2. 30% padding on each side, a square crop of at least 384 px, clamped to the photo.
+3. The crop is scaled to 512 x 512. The mask is drawn directly at 512, slightly thicker so the model also rebuilds the object's soft edge.
+4. LaMa runs on the 512 crop.
+5. The result is scaled back to the crop's size.
+6. It's blended in through a dilated, feathered mask (drawn small and scaled up with filtering), so only the painted area changes.
+7. Colour matching is left for Phase 3.
+- Edits run on the stored (raw) pixels. The painted strokes are mapped through the EXIF orientation, so rotated photos are never rotated in memory. The result keeps the original's orientation, date, location and camera tags.
+- Each result is a new JPEG (quality 95) in the session folder. The original copy is never written to.
+
+**Tests**
+- `RegionPipelineTest.kt` (Robolectric, real Android graphics) checks that only the painted area changes, that the edge is feathered, that EXIF-rotated photos are edited where the user painted, and that unpainting works.
+- `photoEditor.test.tsx` covers the full Remove flow: the model download prompt, Remove, edit undo/redo, and stacked edits.
+- The LaMa input and output format (image 0..1, mask 1 = fill, output 0..255) was checked on the real model with ONNX Runtime before writing the engine.
+
+**Known gaps**
+- Large Removes on 48 MP photos re-encode the whole photo (about 1–2 s). Pixels outside the paint keep their values but go through JPEG once more at quality 95.
+- Long edits don't use a foreground notification yet (planned for Phase 8). A Remove takes seconds, so this shouldn't matter yet.
+- The ONNX Runtime library is arm64 only in this fork (other ABIs are excluded in `android/app/photo-editor.gradle`).
+
 ## Phase 1: Edit screen (2026-11-10)
 
 **What was built**
