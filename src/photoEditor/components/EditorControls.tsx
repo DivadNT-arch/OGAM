@@ -176,7 +176,8 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
 
 const createStyles = (colors: ThemeColors) => ({
   flex: { flex: 1 },
-  side: { width: 320, borderLeftWidth: 1, borderLeftColor: colors.border, backgroundColor: colors.surface },
+  // ScrollView grows by default; keep the panel at its width so the canvas gets the rest.
+  side: { width: 320, flexGrow: 0, flexShrink: 0, borderLeftWidth: 1, borderLeftColor: colors.border, backgroundColor: colors.surface },
   sideContent: { padding: SPACING.md, gap: SPACING.sm },
   bottom: {
     borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface,
