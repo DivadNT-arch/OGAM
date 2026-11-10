@@ -40,7 +40,7 @@ class RegionPipelineTest {
     fun onlyThePaintedAreaChanges_andTheEdgeIsSoft() {
         val image = photo(4000, 3000)
         val map = OrientationMap(4000, 3000, ExifInterface.ORIENTATION_NORMAL)
-        val result = RegionPipeline.process(image, listOf(dab(0.25f, 0.5f)), map, 512, fakeModel)
+        val result = RegionPipeline.process(image, listOf(dab(0.25f, 0.5f)), map, { 512 }, fakeModel)
 
         assertEquals(listOf(512, 512), sizes)
         assertEquals(green, image.getPixel(1000, 1500))           // painted centre: replaced
@@ -61,10 +61,42 @@ class RegionPipelineTest {
         val map = OrientationMap(3000, 4000, ExifInterface.ORIENTATION_ROTATE_90)
         assertEquals(4000, map.uprightW); assertEquals(3000, map.uprightH)
         // Paint near the upright top-left corner (u=0.1, v=0.1 -> upright pixel 400, 300).
-        RegionPipeline.process(raw, listOf(dab(0.1f, 0.1f)), map, 512, fakeModel)
+        RegionPipeline.process(raw, listOf(dab(0.1f, 0.1f)), map, { 512 }, fakeModel)
         // Displaying raw rotated 90 degrees clockwise puts upright (x, y) at raw (y, H_raw - 1 - x).
         assertEquals(green, raw.getPixel(300, 4000 - 1 - 400))
         assertEquals(grey, raw.getPixel(300, 400))                // the unrotated position stays untouched
+    }
+
+    @Test
+    fun aTallPaintedArea_keepsItsShape_insteadOfBeingSquashed() {
+        // A tall stroke in a 3000x4000 photo: the crop is taller than the photo is wide, so it can't be square.
+        val image = photo(3000, 4000)
+        val map = OrientationMap(3000, 4000, ExifInterface.ORIENTATION_NORMAL)
+        val tall = Stroke(false, 0.1f, floatArrayOf(0.2f, 0.05f, 0.2f, 0.95f))
+        var maskSeen: Bitmap? = null
+        val result = RegionPipeline.process(image, listOf(tall), map, { 1024 }) { crop, mask ->
+            maskSeen = mask.copy(Bitmap.Config.ARGB_8888, false)
+            fakeModel(crop, mask)
+        }
+        assertTrue(result.crop.height() > result.crop.width())
+        // The painted line is drawn at the crop's real aspect ratio: thin and tall inside the 1024 square,
+        // with the right-hand padding left unpainted (squashing would have stretched it across the square).
+        val m = maskSeen!!
+        assertEquals(1024, m.width)
+        assertEquals(0, Color.alpha(m.getPixel(1000, 512)))
+        assertEquals(green, image.getPixel(600, 2000))
+        assertEquals(grey, image.getPixel(2500, 2000))
+    }
+
+    @Test
+    fun mirrorPad_fillsTheSquareWithReflectedImage() {
+        val src = Bitmap.createBitmap(10, 4, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(grey); setPixel(9, 0, green)                       // marker at the right edge
+        }
+        val out = RegionPipeline.mirrorPad(src, 16)
+        assertEquals(green, out.getPixel(9, 0))
+        assertEquals(green, out.getPixel(10, 0))                          // mirrored copy starts with the marker
+        assertEquals(green, out.getPixel(10, 7))                          // and again in the flipped row below
     }
 
     @Test
@@ -73,7 +105,7 @@ class RegionPipelineTest {
         val map = OrientationMap(2000, 2000, ExifInterface.ORIENTATION_NORMAL)
         val brush = Stroke(false, 0.1f, floatArrayOf(0.3f, 0.5f, 0.7f, 0.5f))
         val eraser = Stroke(true, 0.15f, floatArrayOf(0.5f, 0.5f, 0.5001f, 0.5f))
-        RegionPipeline.process(image, listOf(brush, eraser), map, 512, fakeModel)
+        RegionPipeline.process(image, listOf(brush, eraser), map, { 512 }, fakeModel)
         assertEquals(green, image.getPixel(700, 1000))
         assertEquals(grey, image.getPixel(1000, 1000))            // erased in the middle
     }

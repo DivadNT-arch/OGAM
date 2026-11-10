@@ -130,12 +130,21 @@ object RegionPipeline {
         )
     }
 
+    /** Paint is grown by this fraction of the crop before the model runs, to catch leftover edges. */
+    const val MASK_GROW = 0.015f
+    /** How much of the missing fine texture is added back as grain (0 = none, 1 = full). */
+    const val GRAIN_STRENGTH = 0.6f
+    /** Larger tone differences are real content changes, not lighting drift; leave them alone. */
+    const val MAX_TONE_SHIFT = 24
+
     /**
      * Runs [model] on the painted region of [image] (mutable, raw orientation) and blends the
-     * result back in place. [model] receives a [size]x[size] crop and a mask where white = fill.
+     * result back in place. [sizeFor] picks the model input size from the crop's longest side.
+     * The crop keeps its shape: it is scaled to fit and the rest is filled with mirrored image.
+     * [model] receives a square crop and a mask (white = fill) of that size.
      */
     fun process(
-        image: Bitmap, strokes: List<Stroke>, map: OrientationMap, size: Int,
+        image: Bitmap, strokes: List<Stroke>, map: OrientationMap, sizeFor: (Int) -> Int,
         model: (crop: Bitmap, mask: Bitmap) -> Bitmap,
     ): Result {
         val timings = Timings()
@@ -143,18 +152,22 @@ object RegionPipeline {
         val box = maskBounds(strokes, map) ?: throw IllegalArgumentException("Paint over the area first.")
         val crop = cropFor(box, image.width, image.height)
         val toRaw = normToRaw(map)
+        val size = sizeFor(max(crop.width(), crop.height()))
+        val scale = size.toFloat() / max(crop.width(), crop.height())
+        val nw = max(1, (crop.width() * scale).roundToInt()).coerceAtMost(size)
+        val nh = max(1, (crop.height() * scale).roundToInt()).coerceAtMost(size)
 
-        // Model inputs: the crop scaled to the engine size, and the mask drawn straight at that size,
-        // grown a little so the model also rebuilds the object's soft edge.
         val cropBmp = Bitmap.createBitmap(image, crop.left, crop.top, crop.width(), crop.height())
-        val modelIn = Bitmap.createScaledBitmap(cropBmp, size, size, true)
-        if (modelIn !== cropBmp) cropBmp.recycle()
+        val fitted = Bitmap.createScaledBitmap(cropBmp, nw, nh, true)
+        if (fitted !== cropBmp) cropBmp.recycle()
+        val modelIn = mirrorPad(fitted, size)
+        fitted.recycle()
         val toModel = Matrix(toRaw).apply {
             postTranslate(-crop.left.toFloat(), -crop.top.toFloat())
-            postScale(size.toFloat() / crop.width(), size.toFloat() / crop.height())
+            postScale(scale, scale)
         }
         val maskIn = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        drawStrokes(Canvas(maskIn), strokes, toModel, map.uprightW * size.toFloat() / crop.width(), extraWidthPx = size * 0.02f)
+        drawStrokes(Canvas(maskIn), strokes, toModel, map.uprightW * scale, extraWidthPx = size * MASK_GROW * 2)
         timings.maskMs = System.currentTimeMillis() - t
 
         t = System.currentTimeMillis()
@@ -163,17 +176,41 @@ object RegionPipeline {
         timings.modelMs = System.currentTimeMillis() - t
 
         t = System.currentTimeMillis()
-        blend(image, generated, crop, strokes, toRaw, map.uprightW)
+        blend(image, generated, Rect(0, 0, nw, nh), crop, strokes, toRaw, map.uprightW)
         generated.recycle()
         timings.blendMs = System.currentTimeMillis() - t
         return Result(crop, timings)
     }
 
+    /** Places [src] at the top-left of a [size] square and fills the rest with mirror copies. */
+    fun mirrorPad(src: Bitmap, size: Int): Bitmap {
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val w = src.width; val h = src.height
+        var y = 0; var flipY = false
+        while (y < size) {
+            var x = 0; var flipX = false
+            while (x < size) {
+                val m = Matrix().apply {
+                    postScale(if (flipX) -1f else 1f, if (flipY) -1f else 1f)
+                    postTranslate((if (flipX) x + w else x).toFloat(), (if (flipY) y + h else y).toFloat())
+                }
+                c.drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG))
+                x += w; flipX = !flipX
+            }
+            y += h; flipY = !flipY
+        }
+        return out
+    }
+
     /**
-     * Pastes [generated] over [crop] through a dilated, feathered copy of the mask, so only
-     * the painted area changes and the edge is invisible.
+     * Pastes [generated] (the [src] part of it) over [crop] through a dilated, feathered copy of
+     * the mask, so only the painted area changes and the edge is invisible. Before pasting, the
+     * fill's tone is matched to its surroundings and missing fine texture is added back as grain.
      */
-    private fun blend(image: Bitmap, generated: Bitmap, crop: Rect, strokes: List<Stroke>, toRaw: Matrix, uprightW: Int) {
+    private fun blend(
+        image: Bitmap, generated: Bitmap, src: Rect, crop: Rect, strokes: List<Stroke>, toRaw: Matrix, uprightW: Int,
+    ) {
         val w = crop.width(); val h = crop.height()
         val feather = max(2f, max(w, h) * 0.012f)
         // Draw the mask small and scale it up with filtering: a cheap, smooth feather.
@@ -183,17 +220,72 @@ object RegionPipeline {
             postTranslate(-crop.left.toFloat(), -crop.top.toFloat())
             postScale(sw.toFloat() / w, sh.toFloat() / h)
         }
+        val widthSmall = uprightW * sw.toFloat() / w
+        val growPx = max(w, h) * MASK_GROW * sw / w
         val maskSmall = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-        drawStrokes(Canvas(maskSmall), strokes, toSmall, uprightW * sw.toFloat() / w, extraWidthPx = 2f)
+        drawStrokes(Canvas(maskSmall), strokes, toSmall, widthSmall, extraWidthPx = 2f + growPx * 2)
         val alpha = Bitmap.createScaledBitmap(maskSmall, w, h, true)
-        if (alpha !== maskSmall) maskSmall.recycle()
+        // A wider band around the paint: the "surroundings" used for tone and grain.
+        val ringSmall = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+        drawStrokes(Canvas(ringSmall), strokes, toSmall, widthSmall, extraWidthPx = 2f + growPx * 2 + max(sw, sh) * 0.08f)
 
         val patch = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(patch)
-        canvas.drawBitmap(generated, null, Rect(0, 0, w, h), Paint(Paint.FILTER_BITMAP_FLAG))
-        canvas.drawBitmap(alpha, 0f, 0f, Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
+        Canvas(patch).drawBitmap(generated, src, Rect(0, 0, w, h), Paint(Paint.FILTER_BITMAP_FLAG))
+        matchToneAndGrain(image, patch, crop, maskSmall, ringSmall)
+        maskSmall.recycle(); ringSmall.recycle()
+        Canvas(patch).drawBitmap(alpha, 0f, 0f, Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
         alpha.recycle()
         Canvas(image).drawBitmap(patch, crop.left.toFloat(), crop.top.toFloat(), Paint())
         patch.recycle()
+    }
+
+    private fun luma(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
+
+    /** Shifts [patch] towards the surroundings' average colour and adds grain to match their texture. */
+    private fun matchToneAndGrain(image: Bitmap, patch: Bitmap, crop: Rect, maskSmall: Bitmap, ringSmall: Bitmap) {
+        val w = patch.width; val h = patch.height
+        val sw = maskSmall.width; val sh = maskSmall.height
+        val inner = IntArray(sw * sh).also { maskSmall.getPixels(it, 0, sw, 0, 0, sw, sh) }
+        val ring = IntArray(sw * sh).also { ringSmall.getPixels(it, 0, sw, 0, 0, sw, sh) }
+        val rnd = java.util.SplittableRandom(42)
+        val sumO = DoubleArray(3); val sumF = DoubleArray(3); var nO = 0; var nF = 0
+        var dO = 0.0; var dF = 0.0; var cO = 0; var cF = 0
+        // Sample pixels: ring pixels (outside the paint) describe the surroundings, inner ones the fill.
+        repeat(60_000) {
+            val x = rnd.nextInt(w - 1); val y = rnd.nextInt(h)
+            val idx = min(sh - 1, y * sh / h) * sw + min(sw - 1, x * sw / w)
+            val inPaint = Color.alpha(inner[idx]) > 200
+            val inRing = !inPaint && Color.alpha(ring[idx]) > 200 && Color.alpha(inner[idx]) < 10
+            if (inRing) {
+                val a = image.getPixel(crop.left + x, crop.top + y); val b = image.getPixel(crop.left + x + 1, crop.top + y)
+                sumO[0] += Color.red(a).toDouble(); sumO[1] += Color.green(a).toDouble(); sumO[2] += Color.blue(a).toDouble(); nO++
+                val d = (luma(a) - luma(b)).toDouble(); dO += d * d; cO++
+            } else if (inPaint) {
+                val a = patch.getPixel(x, y); val b = patch.getPixel(x + 1, y)
+                sumF[0] += Color.red(a).toDouble(); sumF[1] += Color.green(a).toDouble(); sumF[2] += Color.blue(a).toDouble(); nF++
+                val d = (luma(a) - luma(b)).toDouble(); dF += d * d; cF++
+            }
+        }
+        if (nO < 200 || nF < 200) return
+        val shift = IntArray(3) { ((sumO[it] / nO - sumF[it] / nF)).roundToInt() }
+        val applyShift = shift.all { kotlin.math.abs(it) <= MAX_TONE_SHIFT }
+        // Neighbour differences of independent noise have twice its variance.
+        val wanted = kotlin.math.sqrt(dO / cO / 2); val have = kotlin.math.sqrt(dF / cF / 2)
+        val grain = (kotlin.math.sqrt(max(0.0, wanted * wanted - have * have)) * GRAIN_STRENGTH).toFloat()
+        if (!applyShift && grain < 0.5f) return
+        val px = IntArray(w)
+        val noise = java.util.SplittableRandom(7)
+        for (y in 0 until h) {
+            patch.getPixels(px, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val c = px[x]
+                val n = if (grain >= 0.5f) (noise.nextDouble() + noise.nextDouble() + noise.nextDouble() - 1.5) * 2 * grain else 0.0
+                val r = Color.red(c) + (if (applyShift) shift[0] else 0) + n
+                val g = Color.green(c) + (if (applyShift) shift[1] else 0) + n
+                val b = Color.blue(c) + (if (applyShift) shift[2] else 0) + n
+                px[x] = Color.rgb(r.roundToInt().coerceIn(0, 255), g.roundToInt().coerceIn(0, 255), b.roundToInt().coerceIn(0, 255))
+            }
+            patch.setPixels(px, 0, w, 0, y, w, 1)
+        }
     }
 }
