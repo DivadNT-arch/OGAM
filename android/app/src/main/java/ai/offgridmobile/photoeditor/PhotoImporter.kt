@@ -150,7 +150,12 @@ object PhotoImporter {
         val opts = BitmapFactory.Options().apply { inSampleSize = sampleSizeFor(rawW, rawH, PREVIEW_MAX_SIDE) }
         val decoded = BitmapFactory.decodeFile(original.absolutePath, opts)
             ?: throw IllegalStateException("Could not decode the photo.")
-        val scale = minOf(1f, PREVIEW_MAX_SIDE.toFloat() / max(decoded.width, decoded.height))
+        return try { writeUprightPreview(decoded, orientation, out) } finally { decoded.recycle() }
+    }
+
+    /** Writes a JPEG preview (longest side at most 2048) of [raw], rotated upright. Does not recycle [raw]. */
+    fun writeUprightPreview(raw: Bitmap, orientation: Int, out: File): Pair<Int, Int> {
+        val scale = minOf(1f, PREVIEW_MAX_SIDE.toFloat() / max(raw.width, raw.height))
         val matrix = Matrix().apply {
             postScale(scale, scale)
             when (orientation) {
@@ -163,11 +168,14 @@ object PhotoImporter {
                 ExifInterface.ORIENTATION_TRANSVERSE -> { postRotate(270f); postScale(-1f, 1f) }
             }
         }
-        val upright = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
-        if (upright !== decoded) decoded.recycle()
+        val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
         FileOutputStream(out).use { upright.compress(Bitmap.CompressFormat.JPEG, 90, it) }
         val size = upright.width to upright.height
-        upright.recycle()
+        if (upright !== raw) upright.recycle()
         return size
     }
+
+    fun orientationOf(file: File): Int =
+        readExif(file)?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            ?: ExifInterface.ORIENTATION_NORMAL
 }

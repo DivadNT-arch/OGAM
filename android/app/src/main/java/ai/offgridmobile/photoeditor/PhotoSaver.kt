@@ -31,7 +31,7 @@ object PhotoSaver {
         ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
         ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF,
         ExifInterface.TAG_GPS_TIMESTAMP, ExifInterface.TAG_GPS_DATESTAMP,
-        ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL,
+        ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL, ExifInterface.TAG_ORIENTATION,
     )
 
     /** Tags removed when the user turns "keep date and location" off. */
@@ -45,6 +45,14 @@ object PhotoSaver {
         ExifInterface.TAG_OFFSET_TIME, ExifInterface.TAG_OFFSET_TIME_ORIGINAL, ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
         ExifInterface.TAG_SUBSEC_TIME, ExifInterface.TAG_SUBSEC_TIME_ORIGINAL, ExifInterface.TAG_SUBSEC_TIME_DIGITIZED,
     )
+
+    /** Copies date, location, camera and orientation tags from [from] onto the JPEG [to]. */
+    fun copyExif(from: File, to: File) {
+        val source = try { ExifInterface(from.absolutePath) } catch (_: Exception) { null } ?: return
+        val target = ExifInterface(to.absolutePath)
+        CARRIED_TAGS.forEach { tag -> source.getAttribute(tag)?.let { target.setAttribute(tag, it) } }
+        target.saveAttributes()
+    }
 
     fun newDisplayName(baseName: String, extension: String, now: Date = Date()): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)

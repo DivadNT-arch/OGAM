@@ -10,7 +10,9 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.lang.ref.WeakReference
@@ -26,6 +28,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     companion object {
         const val NAME = "PhotoEditorModule"
         const val EVENT_SHARE = "PhotoEditorShareReceived"
+        const val EVENT_MODEL_PROGRESS = "PhotoEditorModelProgress"
         private const val PICK_REQUEST = 42_017
         private var active: WeakReference<PhotoEditorModule>? = null
 
@@ -36,7 +39,12 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     }
 
     private val io = Executors.newSingleThreadExecutor()
+    /** Edits run on their own thread so a long model run never blocks opening or saving. */
+    private val edits = Executors.newSingleThreadExecutor()
+    private val downloads = Executors.newSingleThreadExecutor()
     private var pickPromise: SafePromise? = null
+    @Volatile private var lama: LamaEngine? = null
+    @Volatile private var editCancelled = false
 
     init {
         reactContext.addActivityEventListener(this)
@@ -45,10 +53,10 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
 
     override fun getName(): String = NAME
 
-    private fun emit(event: String) {
+    private fun emit(event: String, payload: WritableMap? = null) {
         if (!reactApplicationContext.hasActiveReactInstance()) return
         reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            .emit(event, null)
+            .emit(event, payload)
     }
 
     @ReactMethod fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
@@ -169,8 +177,163 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // ---- Editing models ---------------------------------------------------------------
+
+    private fun modelInfo(m: EditModel): WritableMap = Arguments.createMap().apply {
+        putString("id", m.id)
+        putString("name", m.name)
+        putString("license", m.license)
+        putDouble("sizeBytes", m.sizeBytes.toDouble())
+        putBoolean("installed", EditModels.isInstalled(reactApplicationContext, m))
+        val part = File(EditModels.file(reactApplicationContext, m).path + ".part")
+        putDouble("partialBytes", part.length().toDouble())
+    }
+
+    @ReactMethod
+    fun getEditModels(promise: Promise) {
+        promise.resolve(Arguments.createArray().apply { EditModels.ALL.forEach { pushMap(modelInfo(it)) } })
+    }
+
+    @ReactMethod
+    fun downloadEditModel(id: String, promise: Promise) {
+        val safe = SafePromise(promise, NAME)
+        val model = try { EditModels.byId(id) } catch (e: Exception) { return safe.reject("UNKNOWN_MODEL", e.message ?: id) }
+        downloads.execute {
+            try {
+                EditModels.download(reactApplicationContext, model) { done, total ->
+                    emit(EVENT_MODEL_PROGRESS, Arguments.createMap().apply {
+                        putString("id", id); putDouble("bytesDone", done.toDouble()); putDouble("bytesTotal", total.toDouble())
+                    })
+                }
+                safe.resolve(modelInfo(model))
+            } catch (e: InterruptedException) {
+                safe.reject("DOWNLOAD_CANCELLED", "Download cancelled.")
+            } catch (e: Exception) {
+                safe.reject("DOWNLOAD_FAILED", e.message ?: "Download failed.", e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun cancelModelDownload(id: String, promise: Promise) {
+        EditModels.cancel(id)
+        promise.resolve(true)
+    }
+
+    @ReactMethod
+    fun deleteEditModel(id: String, promise: Promise) {
+        val safe = SafePromise(promise, NAME)
+        edits.execute {
+            try {
+                val model = EditModels.byId(id)
+                if (model.id == EditModels.LAMA.id) { lama?.close(); lama = null }
+                EditModels.delete(reactApplicationContext, model)
+                safe.resolve(modelInfo(model))
+            } catch (e: Exception) {
+                safe.reject("DELETE_FAILED", e.message ?: "Could not delete the model.", e)
+            }
+        }
+    }
+
+    // ---- Edits --------------------------------------------------------------------------
+
+    private fun parseStrokes(array: ReadableArray): List<Stroke> = (0 until array.size()).map { i ->
+        val m = array.getMap(i)!!
+        val pts = m.getArray("points")!!
+        Stroke(
+            erase = m.getString("mode") == "erase",
+            size = m.getDouble("size").toFloat(),
+            points = FloatArray(pts.size()) { pts.getDouble(it).toFloat() },
+        )
+    }
+
+    /** Cuts out the painted area and fills it with LaMa. Resolves with the new result file. */
+    @ReactMethod
+    fun applyRemove(params: ReadableMap, promise: Promise) {
+        val safe = SafePromise(promise, NAME)
+        val sessionId = params.getString("sessionId")!!
+        val sourcePath = params.getString("sourcePath")!!
+        val originalPath = params.getString("originalPath")!!
+        val outName = params.getString("outName")!!
+        val strokes = parseStrokes(params.getArray("strokes")!!)
+        editCancelled = false
+        edits.execute {
+            try {
+                val file = EditModels.file(reactApplicationContext, EditModels.LAMA)
+                if (!EditModels.isInstalled(reactApplicationContext, EditModels.LAMA)) {
+                    return@execute safe.reject("MODEL_MISSING", "Download the Remove model first (Edit tab, Editing models).")
+                }
+                var loadMs = 0L
+                val engine = lama ?: run {
+                    val t = System.currentTimeMillis()
+                    LamaEngine(file, threads = 4).also { lama = it; loadMs = System.currentTimeMillis() - t }
+                }
+                val dir = File(PhotoImporter.sessionsRoot(reactApplicationContext), sessionId)
+                val out = EditRenderer.applyRegion(
+                    reactApplicationContext, sourcePath, originalPath, strokes, dir, outName, LamaEngine.SIZE,
+                ) { crop, mask ->
+                    if (editCancelled) throw InterruptedException("Cancelled.")
+                    engine.inpaint(crop, mask)
+                }
+                if (editCancelled) { File(out.resultPath).delete(); File(out.previewPath).delete(); throw InterruptedException("Cancelled.") }
+                safe.resolve(Arguments.createMap().apply {
+                    putString("resultPath", out.resultPath)
+                    putString("previewPath", out.previewPath)
+                    putDouble("loadMs", loadMs.toDouble())
+                    putDouble("decodeMs", out.decodeMs.toDouble())
+                    putDouble("maskMs", out.maskMs.toDouble())
+                    putDouble("modelMs", out.modelMs.toDouble())
+                    putDouble("blendMs", out.blendMs.toDouble())
+                    putDouble("encodeMs", out.encodeMs.toDouble())
+                    putInt("cropWidth", out.cropW)
+                    putInt("cropHeight", out.cropH)
+                })
+            } catch (e: InterruptedException) {
+                safe.reject("EDIT_CANCELLED", "Cancelled.")
+            } catch (e: LowMemoryException) {
+                safe.reject("LOW_MEMORY", e.message ?: "Not enough free memory.")
+            } catch (e: OutOfMemoryError) {
+                lama?.close(); lama = null
+                safe.reject("LOW_MEMORY", "Ran out of memory during the edit. Close other apps and try again.")
+            } catch (e: Exception) {
+                val cancelled = editCancelled
+                safe.reject(if (cancelled) "EDIT_CANCELLED" else "EDIT_FAILED", if (cancelled) "Cancelled." else (e.message ?: "The edit failed."), e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun cancelEdit(promise: Promise) {
+        editCancelled = true
+        lama?.cancel()
+        promise.resolve(true)
+    }
+
+    /** Frees the editing model's memory (called before loading something big elsewhere). */
+    @ReactMethod
+    fun releaseEditEngines(promise: Promise) {
+        edits.execute { lama?.close(); lama = null; promise.resolve(true) }
+    }
+
+    /** Deletes result files inside a session folder (dropped history steps). */
+    @ReactMethod
+    fun deleteSessionFiles(paths: ReadableArray, promise: Promise) {
+        val root = PhotoImporter.sessionsRoot(reactApplicationContext).canonicalPath + File.separator
+        io.execute {
+            var n = 0
+            for (i in 0 until paths.size()) {
+                val f = File(paths.getString(i) ?: continue)
+                if (f.canonicalPath.startsWith(root) && f.delete()) n++
+            }
+            promise.resolve(n)
+        }
+    }
+
     override fun invalidate() {
         io.shutdown()
+        downloads.shutdown()
+        edits.execute { lama?.close(); lama = null }
+        edits.shutdown()
         super.invalidate()
     }
 }
