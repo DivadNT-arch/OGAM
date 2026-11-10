@@ -90,6 +90,19 @@ The app contains **two** separate diffusion engines.
 2. **Vulkan (stable-diffusion.cpp) is the most plausible GPU path** on PowerVR, but it hasn't been tested. Off Grid carries several Vulkan workaround patches written for other GPUs.
 3. The 512×512 limit belongs to local-dream's MNN path. stable-diffusion.cpp doesn't have it. Crop → process → paste back (§5.2 of the brief) is still the right approach for speed, either way.
 
-## 6. Benchmarks
+## 6. Benchmarks (Pixel Fold, measured by David with a stopwatch, 2026-11-10)
 
-Not run yet: they need the phone connected to a computer with the Android build tools. See the plan in the reply that went with this file.
+Stock v0.0.103 release build, SD1.5 MNN model from `xororz/sd-mnn`, txt2img 512x512, 20 steps.
+
+| Mode | Time |
+|---|---|
+| "GPU Acceleration" on | 2 min 14 s |
+| "GPU Acceleration" off (CPU) | 2 min 9 s |
+
+**Conclusion:** the same time both ways means MNN's OpenCL path isn't active on this phone, as §5.1 predicted. Both runs used the CPU.
+
+- **Default backend: CPU** (MNN). The GPU switch does nothing on this device.
+- img2img and inpaint time, and peak RAM, still need measuring. The Phase 1 debug timing screen will record them. Expect img2img/inpaint to be *faster* than txt2img at the same step count, because only `strength x steps` denoising steps run (e.g. 0.75 x 20 = 15), plus one VAE encode.
+- Realistic times: a Fill on a 512 crop takes about 1.5 to 2 min, a 384 crop for small areas about 1 min. Remove (LaMa) should take seconds.
+- Upscale: 4x on a 48 MP photo would create a 768 MP image, which isn't practical. Upscale is meant for smaller or cropped photos. 2x on 12 MP is realistic.
+- Possible later speed-up: add stable-diffusion.cpp (MIT) with its Vulkan GPU backend in our own folder and benchmark it. It's untested on PowerVR, so it's an optional experiment, not a dependency.
