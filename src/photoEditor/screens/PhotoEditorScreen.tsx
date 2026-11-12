@@ -11,6 +11,8 @@ import { EditorControls } from '../components/EditorControls';
 import { editSession, useEditorStore } from '../services/editSession';
 import { editModels, useEditModels } from '../services/editModels';
 import { Button } from '../../components';
+import { FillSheet, type FillOptions } from '../components/FillSheet';
+import { VariationPicker } from '../components/VariationPicker';
 
 /** Inner (unfolded) screen and tablets get the side panel; the cover screen gets a bottom bar. */
 const WIDE_LAYOUT_MIN_WIDTH = 600;
@@ -26,6 +28,8 @@ export const PhotoEditorScreen: React.FC = () => {
   const keepMetadata = useEditorStore(s => s.keepMetadata);
   const busy = useEditorStore(s => s.busy);
   const [comparing, setComparing] = useState(false);
+  const [fillOpen, setFillOpen] = useState(false);
+  const progress = useEditorStore(s => s.progress);
   const downloading = useEditModels(s => s.downloading.lama ?? s.downloading.lama1024);
   useEffect(() => { editModels.refresh().catch(() => undefined); }, []);
 
@@ -49,6 +53,24 @@ export const PhotoEditorScreen: React.FC = () => {
       await editSession.remove();
     } catch (e: any) {
       Alert.alert('Remove failed', e?.message ?? String(e));
+    }
+  }, []);
+
+  const openFill = useCallback(() => {
+    const current = useEditorStore.getState().session;
+    if (!current?.mask.strokes.some(st => st.mode === 'brush')) {
+      Alert.alert('Fill', 'Paint over the area you want to change first, then tap Fill.');
+      return;
+    }
+    setFillOpen(true);
+  }, []);
+
+  const runFill = useCallback(async (opts: FillOptions) => {
+    setFillOpen(false);
+    try {
+      await editSession.fill(opts);
+    } catch (e: any) {
+      Alert.alert('Fill failed', e?.message ?? String(e));
     }
   }, []);
 
@@ -90,7 +112,7 @@ export const PhotoEditorScreen: React.FC = () => {
       onTool={editSession.setTool} onBrushSize={editSession.setBrushSize}
       onUndo={editSession.undo} onRedo={editSession.redo} onClear={editSession.clearMask}
       onCompare={setComparing} onKeepMetadata={editSession.setKeepMetadata}
-      onSave={save} onShare={share} onRemove={remove}
+      onSave={save} onShare={share} onRemove={remove} onFill={openFill}
       canUndoEdit={session.history.length > 0} canRedoEdit={session.redoSteps.length > 0}
       editCount={session.history.length} onUndoEdit={editSession.undoEdit} onRedoEdit={editSession.redoEdit}
     />
@@ -118,14 +140,32 @@ export const PhotoEditorScreen: React.FC = () => {
             strokes={mask.strokes} tool={tool} brushSize={brushSize}
             hideMask={comparing} onStroke={editSession.addStroke}
           />
-          {busy === 'removing' && (
+          {(busy === 'removing' || busy === 'preparing' || busy === 'filling') && (
             <View style={styles.overlay} testID="edit-progress">
               <ActivityIndicator color={colors.primary} />
-              <Text style={styles.body}>Removing</Text>
-              <Text style={styles.meta}>Runs on this phone. Small areas take seconds, large ones up to a minute.</Text>
+              <Text style={styles.body}>
+                {busy === 'removing' ? 'Removing' : busy === 'preparing' ? 'Loading the image model' : 'Filling'}
+              </Text>
+              {busy === 'filling' && progress ? (
+                <Text style={styles.meta} testID="edit-progress-steps">
+                  {progress.variations > 1 ? `Version ${progress.variation} of ${progress.variations}, ` : ''}
+                  step {progress.step} of {progress.totalSteps}
+                </Text>
+              ) : (
+                <Text style={styles.meta}>
+                  {busy === 'removing' ? 'Runs on this phone. Small areas take seconds, large ones up to a minute.'
+                    : 'Runs on this phone. A fill takes 1 to 2 minutes.'}
+                </Text>
+              )}
               <Button title="Cancel" variant="outline" size="small" onPress={() => { editSession.cancelEdit(); }}
                 testID="edit-cancel" />
             </View>
+          )}
+          {session.variations && (
+            <VariationPicker
+              previews={session.variations.map(v => v.previewPath)}
+              onChoose={editSession.chooseVariation} onDiscard={editSession.discardVariations}
+            />
           )}
           {downloading !== undefined && (
             <View style={styles.banner}>
@@ -135,6 +175,7 @@ export const PhotoEditorScreen: React.FC = () => {
         </View>
         {controls}
       </View>
+      <FillSheet visible={fillOpen} onClose={() => setFillOpen(false)} onRun={runFill} />
     </SafeAreaView>
   );
 };

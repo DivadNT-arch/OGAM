@@ -74,6 +74,34 @@ export interface RegionEditResult {
   cropHeight: number;
 }
 
+interface FillParams {
+  sessionId: string;
+  sourcePath: string;
+  originalPath: string;
+  strokes: NativeStroke[];
+  outName: string;
+  prompt: string;
+  negativePrompt: string;
+  /** 0..1: how much of the painted area is regenerated. */
+  strength: number;
+  steps: number;
+  guidance: number;
+  seed: number;
+  variations: number;
+  /** Port of the local-dream server that Off Grid runs. */
+  port: number;
+}
+
+interface FillResult {
+  results: { resultPath: string; previewPath: string; seed: number }[];
+  modelMs: number;
+  otherMs: number;
+  cropWidth: number;
+  cropHeight: number;
+}
+
+export interface EditProgress { step: number; totalSteps: number; variation: number; variations: number }
+
 /** Contract for the native photo editor module (Android: photoeditor/PhotoEditorModule.kt). */
 export interface PhotoEditorNative {
   pickPhoto(): Promise<string | null>;
@@ -89,12 +117,17 @@ export interface PhotoEditorNative {
   deleteEditModel(id: string): Promise<EditModelInfo>;
   /** Remove: fills the painted area with LaMa. Rejects with EDIT_CANCELLED, LOW_MEMORY, MODEL_MISSING. */
   applyRemove(params: RegionEditParams): Promise<RegionEditResult>;
+  /** Fill: Stable Diffusion inpainting of the painted area. Rejects with EDIT_CANCELLED, ENGINE_NOT_READY, LOW_MEMORY. */
+  applyFill(params: FillParams): Promise<FillResult>;
+  /** True when the image model folder has the VAE encoder that Fill needs. */
+  checkFillModel(modelPath: string): Promise<boolean>;
   cancelEdit(): Promise<boolean>;
   releaseEditEngines(): Promise<boolean>;
 }
 
 const SHARE_RECEIVED_EVENT = 'PhotoEditorShareReceived';
 const MODEL_PROGRESS_EVENT = 'PhotoEditorModelProgress';
+const EDIT_PROGRESS_EVENT = 'PhotoEditorEditProgress';
 
 const module: PhotoEditorNative | undefined = NativeModules.PhotoEditorModule;
 
@@ -115,5 +148,11 @@ export function onShareReceived(listener: () => void): () => void {
 export function onModelProgress(listener: (p: ModelProgress) => void): () => void {
   if (!module) return () => {};
   const sub = new NativeEventEmitter(NativeModules.PhotoEditorModule).addListener(MODEL_PROGRESS_EVENT, listener);
+  return () => sub.remove();
+}
+
+export function onEditProgress(listener: (p: EditProgress) => void): () => void {
+  if (!module) return () => {};
+  const sub = new NativeEventEmitter(NativeModules.PhotoEditorModule).addListener(EDIT_PROGRESS_EVENT, listener);
   return () => sub.remove();
 }

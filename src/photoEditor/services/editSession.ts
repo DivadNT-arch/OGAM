@@ -2,7 +2,8 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { photoEditorNative, type ImportedPhoto, type RegionEditResult, type SavedPhoto } from '../native/photoEditorNative';
+import { onEditProgress, photoEditorNative, type EditProgress, type ImportedPhoto, type RegionEditResult, type SavedPhoto } from '../native/photoEditorNative';
+import { prepareFillEngine } from './fillEngine';
 import { addStroke, clearMask, EMPTY_MASK, redo, undo, type MaskState, type MaskStroke } from '../maskHistory';
 import { recordTiming, timed } from './timingLog';
 import { activeModelService } from '../../services/activeModelService';
@@ -12,7 +13,7 @@ export type CanvasTool = 'brush' | 'erase' | 'move';
 /** One applied edit. Its files hold the photo as it was after this edit. */
 export interface EditStep {
   id: string;
-  tool: 'remove';
+  tool: 'remove' | 'fill';
   resultPath: string;
   previewPath: string;
   at: string;
@@ -29,6 +30,8 @@ export interface EditSession {
   history: EditStep[];
   /** Edits taken back with Undo edit, newest last. */
   redoSteps: EditStep[];
+  /** Fill variations waiting for the user to pick one. */
+  variations?: { resultPath: string; previewPath: string; seed: number }[];
   lastSaved?: SavedPhoto;
   openedAt: string;
 }
@@ -39,7 +42,9 @@ interface EditorState {
   /** Brush diameter in screen points; stays the same size on screen at any zoom. */
   brushSize: number;
   keepMetadata: boolean;
-  busy: 'opening' | 'saving' | 'sharing' | 'removing' | null;
+  busy: 'opening' | 'saving' | 'sharing' | 'removing' | 'preparing' | 'filling' | null;
+  /** Live step progress of a running Fill. */
+  progress: EditProgress | null;
 }
 
 /**
@@ -49,7 +54,7 @@ interface EditorState {
  */
 export const useEditorStore = create<EditorState>()(
   persist(
-    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null }),
+    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null, progress: null }),
     {
       name: 'photo-editor-session',
       storage: createJSONStorage(() => AsyncStorage),
@@ -60,7 +65,7 @@ export const useEditorStore = create<EditorState>()(
         const session = p.session
           ? { ...p.session, history: p.session.history ?? [], redoSteps: p.session.redoSteps ?? [] }
           : null;
-        return { ...current, ...p, session, busy: null };
+        return { ...current, ...p, session, busy: null, progress: null };
       },
     },
   ),
@@ -183,6 +188,79 @@ export const editSession = {
     } finally {
       set({ busy: null });
     }
+  },
+
+  /**
+   * Fill: regenerates the painted area from a prompt with Off Grid's image model. With more
+   * than one variation the results wait in `session.variations` for `chooseVariation`.
+   * Resolves false if cancelled.
+   */
+  async fill(opts: {
+    prompt: string; negativePrompt: string; strength: number; variations: number; seed?: number;
+  }): Promise<boolean> {
+    const session = get().session;
+    if (!session) throw new Error('No photo is open.');
+    set({ busy: 'preparing', progress: null });
+    const started = Date.now();
+    const off = onEditProgress(p => set({ progress: p }));
+    try {
+      const { port, modelName } = await prepareFillEngine();
+      set({ busy: 'filling' });
+      const result = await photoEditorNative().applyFill({
+        sessionId: session.photo.sessionId,
+        sourcePath: session.resultPath,
+        originalPath: session.photo.originalPath,
+        strokes: session.mask.strokes.map(({ mode, size, points }) => ({ mode, size, points })),
+        outName: `fill_${Date.now()}`,
+        prompt: opts.prompt,
+        negativePrompt: opts.negativePrompt,
+        strength: opts.strength,
+        steps: 20,
+        guidance: 7.5,
+        seed: opts.seed ?? Math.floor(Math.random() * 2_000_000_000),
+        variations: opts.variations,
+        port,
+      });
+      recordTiming({
+        operation: opts.variations > 1 ? `Fill x${opts.variations}` : 'Fill',
+        durationMs: Date.now() - started,
+        detail: `${modelName}; crop ${result.cropWidth}x${result.cropHeight}; model ${result.modelMs} ms, other ${result.otherMs} ms; "${opts.prompt.slice(0, 40)}"`,
+      });
+      if (result.results.length === 1) {
+        const [r] = result.results;
+        editSession.pushStep({ tool: 'fill', resultPath: r.resultPath, previewPath: r.previewPath });
+      } else {
+        const current = get().session;
+        if (current) set({ session: { ...current, variations: result.results } });
+      }
+      return true;
+    } catch (e: any) {
+      const cancelled = e?.code === 'EDIT_CANCELLED';
+      recordTiming({ operation: 'Fill', durationMs: Date.now() - started, detail: cancelled ? 'cancelled' : e?.message, failed: !cancelled });
+      if (cancelled) return false;
+      throw e;
+    } finally {
+      off();
+      set({ busy: null, progress: null });
+    }
+  },
+
+  /** Keeps one Fill variation as the new result and deletes the others. */
+  chooseVariation(index: number): void {
+    const session = get().session;
+    const options = session?.variations;
+    if (!session || !options?.[index]) return;
+    const rest = options.filter((_, i) => i !== index).flatMap(v => [v.resultPath, v.previewPath]);
+    if (rest.length) photoEditorNative().deleteSessionFiles(rest).catch(() => 0);
+    set({ session: { ...session, variations: undefined } });
+    editSession.pushStep({ tool: 'fill', resultPath: options[index].resultPath, previewPath: options[index].previewPath });
+  },
+
+  discardVariations(): void {
+    const session = get().session;
+    if (!session?.variations) return;
+    photoEditorNative().deleteSessionFiles(session.variations.flatMap(v => [v.resultPath, v.previewPath])).catch(() => 0);
+    set({ session: { ...session, variations: undefined } });
   },
 
   async cancelEdit(): Promise<void> {
