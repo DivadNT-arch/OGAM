@@ -18,3 +18,14 @@ Parts (SHA-256):
     a3f8664eea5b39378b2be0be5c10feb7ac00866de8b34f284c6b91d0177775df  lama1024/lama_1024_fp32.onnx.part0
     2003bcc5c98c70f37aa283f667989f3e250063d589c0ee1a51f2aac3f57ecab5  lama1024/lama_1024_fp32.onnx.part1
     492b822d19c4f48a327bc48d810f1319c081890f69e84929c8de9cf2bb2a125e  lama1024/lama_1024_fp32.onnx.part2
+
+## esrgan/realesr_general_x4v3.onnx
+
+Real-ESRGAN realesr-general-x4v3 (xinntao/Real-ESRGAN, BSD-3-Clause), for the Upscale tool. 4x upscaler, dynamic input size.
+
+- Source weights: github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth (SHA-256 8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292).
+- Exported to ONNX (opset 17) with the SRVGGNetCompact architecture written out directly; weights loaded with weights_only=True.
+- Input `input` [1,3,H,W] RGB 0..1. Output `output` [1,3,4H,4W] RGB 0..1.
+- Size: 4866396 bytes. SHA-256: 3439a9e4cd26c4cdfff28f82f00411a7a4f06e7f72a1efdc664479f1e2bf0690
+
+Real-ESRGAN is licensed under the BSD 3-Clause License, Copyright (c) 2021, Xintao Wang.
