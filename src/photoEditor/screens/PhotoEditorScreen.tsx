@@ -30,6 +30,7 @@ export const PhotoEditorScreen: React.FC = () => {
   const [comparing, setComparing] = useState(false);
   const [fillOpen, setFillOpen] = useState(false);
   const progress = useEditorStore(s => s.progress);
+  const fillMsPerStep = useEditorStore(s => s.fillMsPerStep);
   const downloading = useEditModels(s => s.downloading.lama ?? s.downloading.lama1024);
   useEffect(() => { editModels.refresh().catch(() => undefined); }, []);
 
@@ -154,7 +155,7 @@ export const PhotoEditorScreen: React.FC = () => {
               ) : (
                 <Text style={styles.meta}>
                   {busy === 'removing' ? 'Runs on this phone. Small areas take seconds, large ones up to a minute.'
-                    : 'Runs on this phone. A fill takes 1 to 2 minutes.'}
+                    : 'Runs on this phone. A fill takes a few minutes.'}
                 </Text>
               )}
               <Button title="Cancel" variant="outline" size="small" onPress={() => { editSession.cancelEdit(); }}
@@ -175,7 +176,7 @@ export const PhotoEditorScreen: React.FC = () => {
         </View>
         {controls}
       </View>
-      <FillSheet visible={fillOpen} onClose={() => setFillOpen(false)} onRun={runFill} />
+      <FillSheet visible={fillOpen} msPerStep={fillMsPerStep} onClose={() => setFillOpen(false)} onRun={runFill} />
     </SafeAreaView>
   );
 };

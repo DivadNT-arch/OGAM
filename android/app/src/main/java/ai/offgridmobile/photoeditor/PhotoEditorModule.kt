@@ -276,6 +276,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
             erase = m.getString("mode") == "erase",
             size = m.getDouble("size").toFloat(),
             points = FloatArray(pts.size()) { pts.getDouble(it).toFloat() },
+            rect = m.hasKey("shape") && m.getString("shape") == "rect",
         )
     }
 

@@ -100,6 +100,19 @@ class RegionPipelineTest {
     }
 
     @Test
+    fun aBoxSelection_fillsTheWholeRectangle_andNothingOutsideIt() {
+        val image = photo(4000, 3000)
+        val map = OrientationMap(4000, 3000, ExifInterface.ORIENTATION_NORMAL)
+        // A box from (10%, 10%) to (30%, 40%): x 400..1200, y 300..1200.
+        val box = Stroke(false, 0f, floatArrayOf(0.1f, 0.1f, 0.3f, 0.4f), rect = true)
+        RegionPipeline.process(image, listOf(box), map, { 512 }, model = fakeModel)
+        assertEquals(green, image.getPixel(420, 320))             // near the corner: inside the box
+        assertEquals(green, image.getPixel(1180, 1180))
+        assertEquals(grey, image.getPixel(1400, 750))             // well outside the box (beyond the soft edge)
+        assertEquals(grey, image.getPixel(800, 1500))
+    }
+
+    @Test
     fun eraserStrokesRemovePaint() {
         val image = photo(2000, 2000)
         val map = OrientationMap(2000, 2000, ExifInterface.ORIENTATION_NORMAL)

@@ -46,7 +46,7 @@ export interface EditModelInfo {
 
 export interface ModelProgress { id: string; bytesDone: number; bytesTotal: number }
 
-interface NativeStroke { mode: 'brush' | 'erase'; size: number; points: number[] }
+interface NativeStroke { mode: 'brush' | 'erase'; size: number; points: number[]; shape?: 'rect' }
 
 interface RegionEditParams {
   sessionId: string;

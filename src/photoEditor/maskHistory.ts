@@ -9,8 +9,10 @@ export interface MaskStroke {
   mode: StrokeMode;
   /** Line width as a fraction of the image width. */
   size: number;
-  /** Flat list of points: u0, v0, u1, v1, ... */
+  /** Flat list of points: u0, v0, u1, v1, ... For a box: its two opposite corners. */
   points: number[];
+  /** 'rect' = a filled box (Box tool); otherwise a brush line. */
+  shape?: 'rect';
 }
 
 type Action = { type: 'add'; stroke: MaskStroke } | { type: 'clear'; strokes: MaskStroke[] };

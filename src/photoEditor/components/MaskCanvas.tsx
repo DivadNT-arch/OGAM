@@ -52,7 +52,7 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
   const panLastY = useSharedValue(0);
 
   // Live stroke: refs hold the truth, state only triggers a redraw.
-  const live = useRef<{ mode: StrokeMode; size: number; points: number[]; lastX: number; lastY: number } | null>(null);
+  const live = useRef<{ mode: StrokeMode; size: number; points: number[]; lastX: number; lastY: number; box?: boolean } | null>(null);
   const ignoreTouch = useRef(false);
   const [livePoints, setLivePoints] = useState<number[] | null>(null);
 
@@ -73,6 +73,15 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
     setLivePoints(null);
     if (s && s.points.length >= 2) {
       strokeCounter += 1;
+      if (s.box) {
+        // Store the box with sorted corners, clamped to the photo.
+        const [a, b, c, d] = s.points;
+        const pts = [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)].map(v => round4(Math.min(1, Math.max(0, v))));
+        if (pts[2] - pts[0] > 0.002 && pts[3] - pts[1] > 0.002) {
+          onStroke({ id: `${Date.now()}-${strokeCounter}`, mode: 'brush', size: 0, points: pts, shape: 'rect' });
+        }
+        return;
+      }
       onStroke({ id: `${Date.now()}-${strokeCounter}`, mode: s.mode, size: s.size, points: s.points });
     }
   }, [onStroke]);
@@ -91,7 +100,10 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
         if (ignoreTouch.current || fit.width === 0) return;
         const p = toImage(e.x, e.y);
         const size = round4(brushSize / (fit.width * scale.value));
-        live.current = { mode: tool === 'erase' ? 'erase' : 'brush', size, points: [round4(p.x), round4(p.y)], lastX: e.x, lastY: e.y };
+        const start = [round4(p.x), round4(p.y)];
+        live.current = tool === 'box'
+          ? { mode: 'brush', size: 0, points: [...start, ...start], lastX: e.x, lastY: e.y, box: true }
+          : { mode: tool === 'erase' ? 'erase' : 'brush', size, points: start, lastX: e.x, lastY: e.y };
         setLivePoints(live.current.points);
       })
       .onUpdate(e => {
@@ -99,7 +111,7 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
         if (!s || ignoreTouch.current) return;
         if (Math.hypot(e.x - s.lastX, e.y - s.lastY) < MIN_STEP) return;
         const p = toImage(e.x, e.y);
-        s.points = [...s.points, round4(p.x), round4(p.y)];
+        s.points = s.box ? [s.points[0], s.points[1], round4(p.x), round4(p.y)] : [...s.points, round4(p.x), round4(p.y)];
         s.lastX = e.x; s.lastY = e.y;
         setLivePoints(s.points);
       })
@@ -149,8 +161,11 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
   }));
 
   const fitStyle = { left: fit.x, top: fit.y, width: fit.width, height: fit.height };
-  const shown = livePoints && live.current
-    ? [...strokes, { id: 'live', mode: live.current.mode, size: live.current.size, points: livePoints }]
+  const shown: MaskStroke[] = livePoints && live.current
+    ? [...strokes, {
+      id: 'live', mode: live.current.mode, size: live.current.size, points: livePoints,
+      shape: live.current.box ? 'rect' : undefined,
+    }]
     : strokes;
 
   return (
@@ -165,10 +180,14 @@ export const MaskCanvas: React.FC<MaskCanvasProps> = ({
                   <Defs>
                     <Mask id="editMask" maskUnits="userSpaceOnUse" x={0} y={0} width={VB_W} height={vbH}>
                       <Rect x={0} y={0} width={VB_W} height={vbH} fill="black" />
-                      {shown.map(s => (
+                      {shown.map(s => (s.shape === 'rect' ? (
+                        <Rect key={s.id} x={Math.min(s.points[0], s.points[2]) * VB_W} y={Math.min(s.points[1], s.points[3]) * vbH}
+                          width={Math.abs(s.points[2] - s.points[0]) * VB_W} height={Math.abs(s.points[3] - s.points[1]) * vbH}
+                          fill="white" />
+                      ) : (
                         <Path key={s.id} d={strokePath(s.points, vbH)} stroke={s.mode === 'brush' ? 'white' : 'black'}
                           strokeWidth={s.size * VB_W} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                      ))}
+                      )))}
                     </Mask>
                   </Defs>
                   <Rect x={0} y={0} width={VB_W} height={vbH} fill={colors.error} opacity={0.5} mask="url(#editMask)" />

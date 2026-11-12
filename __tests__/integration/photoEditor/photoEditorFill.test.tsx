@@ -113,13 +113,16 @@ describe('photo editor: Fill', () => {
     t.fireEvent.press(view.getByTestId('ai-tool-fill'));
     t.fireEvent.changeText(view.getByTestId('fill-prompt'), 'a terracotta pot with a fern');
     t.fireEvent.press(view.getByTestId('fill-variations-3'));
+    t.fireEvent.press(view.getByTestId('fill-speed-8'));
+    // 3 versions x (8 steps x 90% -> 8 steps x 16 s + 15 s) = 429 s.
+    expect(view.getByTestId('fill-estimate').props.children).toEqual(['Takes ', 'about 7 minutes', ' on this phone.']);
     t.fireEvent.press(view.getByTestId('fill-run'));
 
     await t.waitFor(() => expect(view.getByTestId('variation-picker')).toBeTruthy());
     // Off Grid's real model service loaded the image model on the diffusion engine.
     expect(t.boundary.diffusion.module.loadModel).toHaveBeenCalledWith(expect.objectContaining({ modelPath: '/docs/image_models/sd' }));
     expect(t.fillCalls[0]).toEqual(expect.objectContaining({
-      prompt: 'a terracotta pot with a fern', variations: 3, port: 18081, sourcePath: photo.originalPath,
+      prompt: 'a terracotta pot with a fern', variations: 3, steps: 8, port: 18081, sourcePath: photo.originalPath,
     }));
     expect(t.fillCalls[0].strength).toBeCloseTo(0.9);
     expect(t.useTimingLog.getState().entries[0].operation).toBe('Fill x3');

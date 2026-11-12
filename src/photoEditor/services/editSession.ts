@@ -8,7 +8,7 @@ import { addStroke, clearMask, EMPTY_MASK, redo, undo, type MaskState, type Mask
 import { recordTiming, timed } from './timingLog';
 import { activeModelService } from '../../services/activeModelService';
 
-export type CanvasTool = 'brush' | 'erase' | 'move';
+export type CanvasTool = 'brush' | 'erase' | 'box' | 'move';
 
 /** One applied edit. Its files hold the photo as it was after this edit. */
 export interface EditStep {
@@ -45,6 +45,8 @@ interface EditorState {
   busy: 'opening' | 'saving' | 'sharing' | 'removing' | 'preparing' | 'filling' | null;
   /** Live step progress of a running Fill. */
   progress: EditProgress | null;
+  /** Measured Stable Diffusion speed on this phone, for time estimates (16 s/step measured on the Fold). */
+  fillMsPerStep: number;
 }
 
 /**
@@ -54,11 +56,13 @@ interface EditorState {
  */
 export const useEditorStore = create<EditorState>()(
   persist(
-    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null, progress: null }),
+    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null, progress: null, fillMsPerStep: 16000 }),
     {
       name: 'photo-editor-session',
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: s => ({ session: s.session, tool: s.tool, brushSize: s.brushSize, keepMetadata: s.keepMetadata }),
+      partialize: s => ({
+        session: s.session, tool: s.tool, brushSize: s.brushSize, keepMetadata: s.keepMetadata, fillMsPerStep: s.fillMsPerStep,
+      }),
       // Sessions saved before edit history existed (phase 1 builds) get empty history.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<EditorState>;
@@ -161,7 +165,7 @@ export const editSession = {
       sessionId: session.photo.sessionId,
       sourcePath: session.resultPath,
       originalPath: session.photo.originalPath,
-      strokes: session.mask.strokes.map(({ mode, size, points }) => ({ mode, size, points })),
+      strokes: session.mask.strokes.map(({ mode, size, points, shape }) => ({ mode, size, points, shape })),
       outName: `result_${Date.now()}`,
     };
     set({ busy: 'removing' });
@@ -204,7 +208,7 @@ export const editSession = {
    * Resolves false if cancelled.
    */
   async fill(opts: {
-    prompt: string; negativePrompt: string; strength: number; variations: number; seed?: number;
+    prompt: string; negativePrompt: string; strength: number; variations: number; steps: number; seed?: number;
   }): Promise<boolean> {
     const session = get().session;
     if (!session) throw new Error('No photo is open.');
@@ -219,12 +223,12 @@ export const editSession = {
         sessionId: session.photo.sessionId,
         sourcePath: session.resultPath,
         originalPath: session.photo.originalPath,
-        strokes: session.mask.strokes.map(({ mode, size, points }) => ({ mode, size, points })),
+        strokes: session.mask.strokes.map(({ mode, size, points, shape }) => ({ mode, size, points, shape })),
         outName: `fill_${Date.now()}`,
         prompt: opts.prompt,
         negativePrompt: opts.negativePrompt,
         strength: opts.strength,
-        steps: 20,
+        steps: opts.steps,
         guidance: 7.5,
         seed: opts.seed ?? Math.floor(Math.random() * 2_000_000_000),
         variations: opts.variations,
@@ -242,6 +246,8 @@ export const editSession = {
           `"${opts.prompt.slice(0, 40)}"`,
         ].join('; '),
       });
+      const measured = result.perVariation.map(v => v.msPerStep).filter(ms => ms > 0);
+      if (measured.length) set({ fillMsPerStep: Math.round(Math.min(...measured)) });
       if (result.results.length === 1) {
         const [r] = result.results;
         editSession.pushStep({ tool: 'fill', resultPath: r.resultPath, previewPath: r.previewPath });

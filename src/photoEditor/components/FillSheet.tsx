@@ -6,10 +6,19 @@ import { useTheme, useThemedStyles } from '../../theme';
 import type { ThemeColors } from '../../theme';
 import { SPACING, TYPOGRAPHY } from '../../constants';
 
-export interface FillOptions { prompt: string; negativePrompt: string; strength: number; variations: number }
+export interface FillOptions { prompt: string; negativePrompt: string; strength: number; variations: number; steps: number }
+
+/** Speed presets: Stable Diffusion steps. Fewer steps are faster but less detailed. */
+const SPEEDS = [
+  { label: 'Quick', steps: 8 },
+  { label: 'Balanced', steps: 12 },
+  { label: 'Best', steps: 20 },
+];
 
 interface FillSheetProps {
   visible: boolean;
+  /** Measured milliseconds per step on this phone, for the time estimate. */
+  msPerStep: number;
   onClose: () => void;
   onRun: (opts: FillOptions) => void;
 }
@@ -17,14 +26,17 @@ interface FillSheetProps {
 const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, text, watermark';
 
 /** Fill settings: what to put in the painted area, how strongly, and how many versions. */
-export const FillSheet: React.FC<FillSheetProps> = ({ visible, onClose, onRun }) => {
+export const FillSheet: React.FC<FillSheetProps> = ({ visible, msPerStep, onClose, onRun }) => {
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState(DEFAULT_NEGATIVE);
   const [strength, setStrength] = useState(0.9);
   const [variations, setVariations] = useState(1);
-  const minutes = variations === 1 ? 'about 1 to 2 minutes' : `about ${variations} to ${variations * 2} minutes`;
+  const [steps, setSteps] = useState(12);
+  // Img2img runs only the strength share of the steps, plus about 15 s to prepare each version.
+  const seconds = variations * (Math.ceil(steps * strength) * msPerStep / 1000 + 15);
+  const estimate = seconds < 90 ? `about ${Math.round(seconds)} seconds` : `about ${Math.round(seconds / 60)} minutes`;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -32,6 +44,10 @@ export const FillSheet: React.FC<FillSheetProps> = ({ visible, onClose, onRun })
         <View style={styles.sheet} testID="fill-sheet">
           <Text style={styles.title}>Fill</Text>
           <Text style={styles.meta}>Describe what should be in the painted area. Runs on this phone.</Text>
+          <Text style={styles.meta}>
+            Tips: describe the thing and the style of the photo (e.g. "framed print of Starry Night, flat, front view,
+            photo"). For pictures, screens and windows, select with Box so the edges are straight.
+          </Text>
 
           <Text style={styles.label}>What should be there</Text>
           <TextInput
@@ -56,6 +72,16 @@ export const FillSheet: React.FC<FillSheetProps> = ({ visible, onClose, onRun })
           />
           <Text style={styles.meta}>Lower keeps more of what is there now; higher replaces it completely.</Text>
 
+          <Text style={styles.label}>Speed</Text>
+          <View style={styles.row}>
+            {SPEEDS.map(sp => (
+              <TouchableOpacity key={sp.steps} onPress={() => setSteps(sp.steps)} testID={`fill-speed-${sp.steps}`}
+                style={[styles.choice, steps === sp.steps && styles.choiceActive]}>
+                <Text style={[styles.body, steps === sp.steps && styles.choiceTextActive]}>{sp.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <Text style={styles.label}>Versions</Text>
           <View style={styles.row}>
             {[1, 3].map(n => (
@@ -65,12 +91,12 @@ export const FillSheet: React.FC<FillSheetProps> = ({ visible, onClose, onRun })
               </TouchableOpacity>
             ))}
           </View>
-          <Text style={styles.meta}>Takes {minutes}.</Text>
+          <Text style={styles.meta} testID="fill-estimate">Takes {estimate} on this phone.</Text>
 
           <View style={styles.actions}>
             <Button title="Cancel" variant="ghost" onPress={onClose} testID="fill-cancel" />
             <Button title="Fill" disabled={!prompt.trim()} testID="fill-run"
-              onPress={() => onRun({ prompt: prompt.trim(), negativePrompt: negativePrompt.trim(), strength, variations })} />
+              onPress={() => onRun({ prompt: prompt.trim(), negativePrompt: negativePrompt.trim(), strength, variations, steps })} />
           </View>
         </View>
       </View>

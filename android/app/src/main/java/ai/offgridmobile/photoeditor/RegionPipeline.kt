@@ -16,8 +16,11 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** One mask stroke in normalised UPRIGHT image coordinates (what the user saw). */
-data class Stroke(val erase: Boolean, val size: Float, val points: FloatArray)
+/**
+ * One mask stroke in normalised UPRIGHT image coordinates (what the user saw). A [rect] stroke
+ * is a filled box with corners (points[0], points[1]) and (points[2], points[3]).
+ */
+data class Stroke(val erase: Boolean, val size: Float, val points: FloatArray, val rect: Boolean = false)
 
 /**
  * Maps the upright image the user painted on to the stored (raw) pixel grid, which may be
@@ -75,6 +78,17 @@ object RegionPipeline {
         for (s in strokes) {
             val path = Path()
             val pts = s.points
+            if (s.rect && pts.size >= 4) {
+                path.moveTo(pts[0], pts[1]); path.lineTo(pts[2], pts[1]); path.lineTo(pts[2], pts[3]); path.lineTo(pts[0], pts[3]); path.close()
+                path.transform(transform)
+                paint.style = if (extraWidthPx > 0f && !s.erase) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
+                paint.strokeWidth = if (s.erase) 0f else extraWidthPx
+                paint.color = Color.WHITE
+                paint.xfermode = if (s.erase) PorterDuffXfermode(PorterDuff.Mode.CLEAR) else null
+                canvas.drawPath(path, paint)
+                paint.style = Paint.Style.STROKE
+                continue
+            }
             if (pts.size < 2) continue
             path.moveTo(pts[0], pts[1])
             if (pts.size == 2) path.lineTo(pts[0] + 1e-4f, pts[1])
@@ -99,18 +113,20 @@ object RegionPipeline {
         val brushes = strokes.filter { !it.erase }
         if (brushes.isEmpty()) return null
         val toRaw = normToRaw(map)
-        var box: RectF? = null
+        // Plain min/max: RectF.union ignores zero-size rects, which a box's corner points are.
+        var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
         for (s in brushes) {
-            val half = s.size * map.uprightW / 2f
+            val half = if (s.rect) 0f else s.size * map.uprightW / 2f
             val pts = s.points.copyOf()
             toRaw.mapPoints(pts)
             var i = 0
             while (i + 1 < pts.size) {
-                val r = RectF(pts[i] - half, pts[i + 1] - half, pts[i] + half, pts[i + 1] + half)
-                box = box?.apply { union(r) } ?: r
+                l = min(l, pts[i] - half); t = min(t, pts[i + 1] - half)
+                r = max(r, pts[i] + half); b = max(b, pts[i + 1] + half)
                 i += 2
             }
         }
+        val box = RectF(l, t, max(r, l + 1f), max(b, t + 1f))
         return box
     }
 

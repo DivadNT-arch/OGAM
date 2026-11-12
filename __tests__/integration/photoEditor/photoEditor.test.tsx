@@ -158,10 +158,27 @@ describe('photo editor', () => {
     fireEvent.press(editor.getByTestId('edit-redo'));
     expect(editor.getByText('1 edit')).toBeTruthy();
 
-    // A second Remove builds on the first result.
+    // Box tool: drag out a rectangle; it is sent as a filled box with sorted corners.
+    fireEvent.press(editor.getByTestId('tool-box'));
+    const box = drawGestures[drawGestures.length - 1];
+    act(() => {
+      box.onTouchesDown({ numberOfTouches: 1 });
+      box.onBegin({ x: 300, y: 250 });
+      box.onUpdate({ x: 200, y: 150 });
+      box.onFinalize();
+    });
+    fireEvent.press(editor.getByTestId('ai-tool-remove'));
+    await waitFor(() => expect(removeCalls).toHaveLength(2));
+    const sent = removeCalls[1].strokes[0];
+    expect(sent.shape).toBe('rect');
+    expect(sent.points[0]).toBeLessThan(sent.points[2]);
+    expect(sent.points[1]).toBeLessThan(sent.points[3]);
+    fireEvent.press(editor.getByTestId('tool-brush'));
+
+    // A further Remove builds on the previous result.
     drawStroke();
     fireEvent.press(editor.getByTestId('ai-tool-remove'));
-    await waitFor(() => expect(editor.getByText('2 edits')).toBeTruthy());
-    expect(removeCalls[1].sourcePath).toMatch(/result_\d+\.jpg$/);
+    await waitFor(() => expect(editor.getByText('3 edits')).toBeTruthy());
+    expect(removeCalls[2].sourcePath).toMatch(/result_\d+\.jpg$/);
   });
 });

@@ -75,12 +75,14 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
 
   const maskTools = (
     <>
-    <Text style={styles.meta}>Paint the whole object, its shadow and a little margin. Unpaint removes paint, not parts of the photo.</Text>
+    <Text style={styles.meta}>Paint the whole object, its shadow and a little margin. Box selects a rectangle (pictures, screens, windows). Unpaint removes paint.</Text>
     <View style={styles.row}>
       <IconButton label="Paint" active={p.tool === 'brush'} onPress={() => p.onTool('brush')} testID="tool-brush"
         icon={<MaterialIcon name="brush" size={20} color={tint(p.tool === 'brush')} />} />
       <IconButton label="Unpaint" active={p.tool === 'erase'} onPress={() => p.onTool('erase')} testID="tool-erase"
         icon={<MaterialIcon name="auto-fix-off" size={20} color={tint(p.tool === 'erase')} />} />
+      <IconButton label="Box" active={p.tool === 'box'} onPress={() => p.onTool('box')} testID="tool-box"
+        icon={<Icon name="square" size={20} color={tint(p.tool === 'box')} />} />
       <IconButton label="Move" active={p.tool === 'move'} onPress={() => p.onTool('move')} testID="tool-move"
         icon={<Icon name="move" size={20} color={tint(p.tool === 'move')} />} />
       <IconButton label="Undo" disabled={!p.canUndo} onPress={p.onUndo} testID="mask-undo"
