@@ -2,6 +2,28 @@
 
 Running log for the photo-editor fork (branch `feature/photo-editor`, based on upstream v0.0.103).
 
+## Phase 4: Upscale (2026-11-12)
+
+**What was built**
+- **Upscale:** enlarges the whole current photo 2x or 4x with Real-ESRGAN (`realesr-general-x4v3`, BSD-3, 5 MB download). Each size option shows the resulting pixel size. Sizes past 64 MP aren't offered, so a 12 MP photo can go 2x (48 MP), and a 3 MP photo 2x or 4x.
+- **Detail:** Natural (45%), Balanced (70%) or Sharp (100%). This mixes the AI result with a plain enlargement, because full Real-ESRGAN can look "painted" on fabric and fur.
+- A time estimate from the speed measured on this phone (it starts from a 30 s per input megapixel guess), progress by tile, Cancel, and the foreground notification.
+- The upscaled photo becomes a new step in the edit history. The header shows the current size, Undo edit goes back to the original size, and later Remove and Fill edits work on the upscaled photo.
+
+**How it works**
+- The model: the official `.pth` weights, loaded with `weights_only=True` (no code from the file runs), with the small SRVGGNetCompact network written out in the export script. It's exported to ONNX with flexible input size and hosted on the `editing-models` branch with its SHA-256.
+- Tiling: 384 px tiles with 34 px of context on each side. 34 px covers the network's full reach, and tiled output on a real photo matched a whole-image run exactly (difference 0.0). With 12 px of context, seam differences went up to 6 levels.
+- Each tile is upscaled 4x, then drawn at the chosen factor over a plain enlargement with the Detail strength as opacity.
+- The result is a JPEG (quality 95) with the original's date, location, camera and orientation tags.
+
+**Fill quick fixes** (from David's tests)
+- **Box** tool: drag out a filled rectangle for pictures, screens and windows. A blob-shaped mask cut the generated painting off at its edges.
+- **Speed** presets: Quick (8 steps), Balanced (12, the default) and Best (20). The Phase 0 benchmark (2:09) turned out to be 8 steps, not 20: the Fold runs this model at about 16 s per step on its CPU.
+- The Fill time estimate uses the seconds per step measured on this phone.
+- Prompt tips in the Fill sheet.
+- Bug fix: mask bounds ignored zero-width points (`RectF.union` skips empty rectangles), which broke boxes.
+- Long edits run under a foreground service. A 3-version Fill took 52 minutes with the app in the background (about 3x throttled).
+
 ## Phase 3: Fill (2026-11-12)
 
 **What was built**
