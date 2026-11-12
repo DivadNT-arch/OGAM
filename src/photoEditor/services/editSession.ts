@@ -2,7 +2,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { onEditProgress, photoEditorNative, type EditProgress, type ImportedPhoto, type RegionEditResult, type SavedPhoto } from '../native/photoEditorNative';
+import { onEditProgress, photoEditorNative, type EditProgress, type ImportedPhoto, type RegionEditResult, type SavedPhoto, type UpscaleResult } from '../native/photoEditorNative';
 import { prepareFillEngine } from './fillEngine';
 import { addStroke, clearMask, EMPTY_MASK, redo, undo, type MaskState, type MaskStroke } from '../maskHistory';
 import { recordTiming, timed } from './timingLog';
@@ -13,9 +13,12 @@ export type CanvasTool = 'brush' | 'erase' | 'box' | 'move';
 /** One applied edit. Its files hold the photo as it was after this edit. */
 export interface EditStep {
   id: string;
-  tool: 'remove' | 'fill';
+  tool: 'remove' | 'fill' | 'upscale';
   resultPath: string;
   previewPath: string;
+  /** Upright size after this step, when it changed the size (Upscale). */
+  width?: number;
+  height?: number;
   at: string;
 }
 
@@ -42,11 +45,13 @@ interface EditorState {
   /** Brush diameter in screen points; stays the same size on screen at any zoom. */
   brushSize: number;
   keepMetadata: boolean;
-  busy: 'opening' | 'saving' | 'sharing' | 'removing' | 'preparing' | 'filling' | null;
+  busy: 'opening' | 'saving' | 'sharing' | 'removing' | 'preparing' | 'filling' | 'upscaling' | null;
   /** Live step progress of a running Fill. */
   progress: EditProgress | null;
   /** Measured Stable Diffusion speed on this phone, for time estimates (16 s/step measured on the Fold). */
   fillMsPerStep: number;
+  /** Measured Upscale speed: milliseconds per input megapixel (estimate until measured). */
+  upscaleMsPerMp: number;
 }
 
 /**
@@ -56,12 +61,13 @@ interface EditorState {
  */
 export const useEditorStore = create<EditorState>()(
   persist(
-    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null, progress: null, fillMsPerStep: 16000 }),
+    (): EditorState => ({ session: null, tool: 'brush', brushSize: 40, keepMetadata: true, busy: null, progress: null, fillMsPerStep: 16000, upscaleMsPerMp: 30000 }),
     {
       name: 'photo-editor-session',
       storage: createJSONStorage(() => AsyncStorage),
       partialize: s => ({
         session: s.session, tool: s.tool, brushSize: s.brushSize, keepMetadata: s.keepMetadata, fillMsPerStep: s.fillMsPerStep,
+        upscaleMsPerMp: s.upscaleMsPerMp,
       }),
       // Sessions saved before edit history existed (phase 1 builds) get empty history.
       merge: (persisted, current) => {
@@ -98,6 +104,14 @@ async function requestNotificationPermission(): Promise<void> {
   try {
     await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
   } catch { /* the edit still runs */ }
+}
+
+/** Upright pixel size of the current result (Upscale changes it). */
+export function currentSize(session: EditSession): { width: number; height: number } {
+  const sized = [...session.history].reverse().find(st => st.width && st.height);
+  return sized?.width && sized.height
+    ? { width: sized.width, height: sized.height }
+    : { width: session.photo.width, height: session.photo.height };
 }
 
 async function discardFiles(session: EditSession | null): Promise<void> {
@@ -259,6 +273,45 @@ export const editSession = {
     } catch (e: any) {
       const cancelled = e?.code === 'EDIT_CANCELLED';
       recordTiming({ operation: 'Fill', durationMs: Date.now() - started, detail: cancelled ? 'cancelled' : e?.message, failed: !cancelled });
+      if (cancelled) return false;
+      throw e;
+    } finally {
+      off();
+      set({ busy: null, progress: null });
+    }
+  },
+
+  /** Upscale: enlarges the current result 2x or 4x with Real-ESRGAN. Resolves false if cancelled. */
+  async upscale(opts: { factor: 2 | 4; detail: number }): Promise<boolean> {
+    const session = get().session;
+    if (!session) throw new Error('No photo is open.');
+    const before = currentSize(session);
+    set({ busy: 'upscaling', progress: null });
+    await requestNotificationPermission();
+    const off = onEditProgress(p => set({ progress: p }));
+    const started = Date.now();
+    try {
+      const r: UpscaleResult = await photoEditorNative().applyUpscale({
+        sessionId: session.photo.sessionId,
+        sourcePath: session.resultPath,
+        originalPath: session.photo.originalPath,
+        outName: `upscale_${Date.now()}`,
+        factor: opts.factor,
+        detail: opts.detail,
+      });
+      const inputMp = (before.width * before.height) / 1e6;
+      if (inputMp > 0) set({ upscaleMsPerMp: Math.round(r.modelMs / inputMp) });
+      recordTiming({
+        operation: `Upscale ${opts.factor}x`,
+        durationMs: Date.now() - started,
+        detail: `${before.width}x${before.height} to ${r.width}x${r.height}; ${r.tiles} tiles, model ${(r.modelMs / 1000).toFixed(0)} s `
+          + `(${((r.modelMs / 1000) / Math.max(inputMp, 0.01)).toFixed(0)} s/MP); decode ${r.decodeMs} ms, encode ${r.encodeMs} ms`,
+      });
+      editSession.pushStep({ tool: 'upscale', resultPath: r.resultPath, previewPath: r.previewPath, width: r.width, height: r.height });
+      return true;
+    } catch (e: any) {
+      const cancelled = e?.code === 'EDIT_CANCELLED';
+      recordTiming({ operation: `Upscale ${opts.factor}x`, durationMs: Date.now() - started, detail: cancelled ? 'cancelled' : e?.message, failed: !cancelled });
       if (cancelled) return false;
       throw e;
     } finally {

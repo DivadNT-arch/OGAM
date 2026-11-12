@@ -102,6 +102,28 @@ interface FillResult {
   cropHeight: number;
 }
 
+interface UpscaleParams {
+  sessionId: string;
+  sourcePath: string;
+  originalPath: string;
+  outName: string;
+  factor: 2 | 4;
+  /** 0 = plain enlargement, 1 = full Real-ESRGAN detail. */
+  detail: number;
+}
+
+export interface UpscaleResult {
+  resultPath: string;
+  previewPath: string;
+  /** New upright size. */
+  width: number;
+  height: number;
+  decodeMs: number;
+  modelMs: number;
+  encodeMs: number;
+  tiles: number;
+}
+
 export interface EditProgress { step: number; totalSteps: number; variation: number; variations: number }
 
 /** Contract for the native photo editor module (Android: photoeditor/PhotoEditorModule.kt). */
@@ -121,6 +143,8 @@ export interface PhotoEditorNative {
   applyRemove(params: RegionEditParams): Promise<RegionEditResult>;
   /** Fill: Stable Diffusion inpainting of the painted area. Rejects with EDIT_CANCELLED, ENGINE_NOT_READY, LOW_MEMORY. */
   applyFill(params: FillParams): Promise<FillResult>;
+  /** Upscale the whole current result 2x or 4x. Rejects with TOO_LARGE, MODEL_MISSING, LOW_MEMORY, EDIT_CANCELLED. */
+  applyUpscale(params: UpscaleParams): Promise<UpscaleResult>;
   /** True when the image model folder has the VAE encoder that Fill needs. */
   checkFillModel(modelPath: string): Promise<boolean>;
   cancelEdit(): Promise<boolean>;

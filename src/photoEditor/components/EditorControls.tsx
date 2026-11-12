@@ -42,6 +42,7 @@ interface EditorControlsProps {
   onShare: () => void;
   onRemove: () => void;
   onFill: () => void;
+  onUpscale: () => void;
   canUndoEdit: boolean;
   canRedoEdit: boolean;
   editCount: number;
@@ -111,9 +112,9 @@ export const EditorControls: React.FC<EditorControlsProps> = p => {
   const aiTools = (
     <View style={styles.row}>
       {AI_TOOLS.map(t => (
-        <IconButton key={t.key} label={t.label} testID={`ai-tool-${t.key}`} disabled={working && (t.key === 'remove' || t.key === 'fill')}
-          icon={<Icon name={t.icon} size={20} color={t.key === 'remove' || t.key === 'fill' ? colors.primary : colors.textMuted} />}
-          onPress={t.key === 'remove' ? p.onRemove : t.key === 'fill' ? p.onFill
+        <IconButton key={t.key} label={t.label} testID={`ai-tool-${t.key}`} disabled={working && (t.key === 'remove' || t.key === 'fill' || t.key === 'upscale')}
+          icon={<Icon name={t.icon} size={20} color={t.key === 'remove' || t.key === 'fill' || t.key === 'upscale' ? colors.primary : colors.textMuted} />}
+          onPress={t.key === 'remove' ? p.onRemove : t.key === 'fill' ? p.onFill : t.key === 'upscale' ? p.onUpscale
             : () => Alert.alert(t.label, `${t.label} arrives in phase ${t.phase}.`)} />
       ))}
     </View>

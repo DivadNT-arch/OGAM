@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
@@ -8,11 +8,12 @@ import type { ThemeColors } from '../../theme';
 import { SPACING, TYPOGRAPHY } from '../../constants';
 import { MaskCanvas } from '../components/MaskCanvas';
 import { EditorControls } from '../components/EditorControls';
-import { editSession, useEditorStore } from '../services/editSession';
+import { currentSize, editSession, useEditorStore } from '../services/editSession';
 import { editModels, useEditModels } from '../services/editModels';
-import { Button } from '../../components';
 import { FillSheet, type FillOptions } from '../components/FillSheet';
 import { VariationPicker } from '../components/VariationPicker';
+import { UpscaleSheet } from '../components/UpscaleSheet';
+import { EditProgressOverlay } from '../components/EditProgressOverlay';
 
 /** Inner (unfolded) screen and tablets get the side panel; the cover screen gets a bottom bar. */
 const WIDE_LAYOUT_MIN_WIDTH = 600;
@@ -29,6 +30,8 @@ export const PhotoEditorScreen: React.FC = () => {
   const busy = useEditorStore(s => s.busy);
   const [comparing, setComparing] = useState(false);
   const [fillOpen, setFillOpen] = useState(false);
+  const [upscaleOpen, setUpscaleOpen] = useState(false);
+  const upscaleMsPerMp = useEditorStore(s => s.upscaleMsPerMp);
   const progress = useEditorStore(s => s.progress);
   const fillMsPerStep = useEditorStore(s => s.fillMsPerStep);
   const downloading = useEditModels(s => s.downloading.lama ?? s.downloading.lama1024);
@@ -75,6 +78,26 @@ export const PhotoEditorScreen: React.FC = () => {
     }
   }, []);
 
+  const openUpscale = useCallback(() => {
+    if (!editModels.isInstalled('esrgan')) {
+      Alert.alert('Download the Upscale model?', 'Upscale uses Real-ESRGAN (5 MB). It downloads once and then works offline.', [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Download', onPress: () => { editModels.download('esrgan').then(() => setUpscaleOpen(true)); } },
+      ]);
+      return;
+    }
+    setUpscaleOpen(true);
+  }, []);
+
+  const runUpscale = useCallback(async (opts: { factor: 2 | 4; detail: number }) => {
+    setUpscaleOpen(false);
+    try {
+      await editSession.upscale(opts);
+    } catch (e: any) {
+      Alert.alert('Upscale failed', e?.message ?? String(e));
+    }
+  }, []);
+
   const save = useCallback(async () => {
     try {
       const saved = await editSession.saveAsNew();
@@ -100,6 +123,7 @@ export const PhotoEditorScreen: React.FC = () => {
   }
 
   const { photo, mask } = session;
+  const size = currentSize(session);
   const wide = width >= WIDE_LAYOUT_MIN_WIDTH;
   // Press-and-hold shows the original photo, without the mask.
   const imageUri = comparing ? photo.previewPath : session.resultPreviewPath;
@@ -113,7 +137,7 @@ export const PhotoEditorScreen: React.FC = () => {
       onTool={editSession.setTool} onBrushSize={editSession.setBrushSize}
       onUndo={editSession.undo} onRedo={editSession.redo} onClear={editSession.clearMask}
       onCompare={setComparing} onKeepMetadata={editSession.setKeepMetadata}
-      onSave={save} onShare={share} onRemove={remove} onFill={openFill}
+      onSave={save} onShare={share} onRemove={remove} onFill={openFill} onUpscale={openUpscale}
       canUndoEdit={session.history.length > 0} canRedoEdit={session.redoSteps.length > 0}
       editCount={session.history.length} onUndoEdit={editSession.undoEdit} onRedoEdit={editSession.redoEdit}
     />
@@ -128,7 +152,7 @@ export const PhotoEditorScreen: React.FC = () => {
         <View style={styles.flex}>
           <Text style={styles.title} numberOfLines={1}>{photo.displayName}</Text>
           <Text style={styles.meta}>
-            {photo.width} x {photo.height} ({((photo.width * photo.height) / 1e6).toFixed(1)} MP)
+            {size.width} x {size.height} ({((size.width * size.height) / 1e6).toFixed(1)} MP)
             {comparing ? '  BEFORE' : ''}
           </Text>
         </View>
@@ -141,27 +165,7 @@ export const PhotoEditorScreen: React.FC = () => {
             strokes={mask.strokes} tool={tool} brushSize={brushSize}
             hideMask={comparing} onStroke={editSession.addStroke}
           />
-          {(busy === 'removing' || busy === 'preparing' || busy === 'filling') && (
-            <View style={styles.overlay} testID="edit-progress">
-              <ActivityIndicator color={colors.primary} />
-              <Text style={styles.body}>
-                {busy === 'removing' ? 'Removing' : busy === 'preparing' ? 'Loading the image model' : 'Filling'}
-              </Text>
-              {busy === 'filling' && progress ? (
-                <Text style={styles.meta} testID="edit-progress-steps">
-                  {progress.variations > 1 ? `Version ${progress.variation} of ${progress.variations}, ` : ''}
-                  step {progress.step} of {progress.totalSteps}
-                </Text>
-              ) : (
-                <Text style={styles.meta}>
-                  {busy === 'removing' ? 'Runs on this phone. Small areas take seconds, large ones up to a minute.'
-                    : 'Runs on this phone. A fill takes a few minutes.'}
-                </Text>
-              )}
-              <Button title="Cancel" variant="outline" size="small" onPress={() => { editSession.cancelEdit(); }}
-                testID="edit-cancel" />
-            </View>
-          )}
+          <EditProgressOverlay busy={busy} progress={progress} />
           {session.variations && (
             <VariationPicker
               previews={session.variations.map(v => v.previewPath)}
@@ -176,6 +180,10 @@ export const PhotoEditorScreen: React.FC = () => {
         </View>
         {controls}
       </View>
+      <UpscaleSheet
+        visible={upscaleOpen} width={size.width} height={size.height} msPerMp={upscaleMsPerMp}
+        onClose={() => setUpscaleOpen(false)} onRun={runUpscale}
+      />
       <FillSheet visible={fillOpen} msPerStep={fillMsPerStep} onClose={() => setFillOpen(false)} onRun={runFill} />
     </SafeAreaView>
   );
@@ -195,10 +203,6 @@ const createStyles = (colors: ThemeColors) => ({
   link: { ...TYPOGRAPHY.body, color: colors.primary, marginTop: SPACING.md },
   rowBody: { flex: 1, flexDirection: 'row' as const },
   columnBody: { flex: 1, flexDirection: 'column' as const },
-  overlay: {
-    position: 'absolute' as const, left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center' as const,
-    justifyContent: 'center' as const, gap: SPACING.sm, backgroundColor: colors.overlay,
-  },
   banner: {
     position: 'absolute' as const, left: SPACING.md, right: SPACING.md, top: SPACING.md, padding: SPACING.sm,
     borderRadius: 8, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
