@@ -46,7 +46,8 @@ object EditRenderer {
 
     fun applyRegion(
         context: Context, sourcePath: String, originalPath: String, strokes: List<Stroke>,
-        outDir: File, outName: String, maxInputSize: Int, sizeFor: (Int) -> Int, model: (Bitmap, Bitmap) -> Bitmap,
+        outDir: File, outName: String, maxInputSize: Int, sizeFor: (Int) -> Int,
+        feather: Float = RegionPipeline.DEFAULT_FEATHER, model: (Bitmap, Bitmap) -> Bitmap,
     ): EditOutput {
         val original = File(originalPath)
         val orientation = PhotoImporter.orientationOf(original)
@@ -61,7 +62,7 @@ object EditRenderer {
         val decodeMs = System.currentTimeMillis() - t
         try {
             val map = OrientationMap(image.width, image.height, orientation)
-            val result = RegionPipeline.process(image, strokes, map, sizeFor, model)
+            val result = RegionPipeline.process(image, strokes, map, sizeFor, feather, model)
 
             t = System.currentTimeMillis()
             outDir.mkdirs()

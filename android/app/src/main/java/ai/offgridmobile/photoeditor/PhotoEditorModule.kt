@@ -64,6 +64,21 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
             .emit(event, payload)
     }
 
+    /** Foreground notification + screen kept on for the duration of an edit. */
+    private fun beginLongEdit(text: String) {
+        EditForegroundService.start(reactApplicationContext, text)
+        reactApplicationContext.currentActivity?.let { a ->
+            a.runOnUiThread { a.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
+    }
+
+    private fun endLongEdit() {
+        EditForegroundService.stop(reactApplicationContext)
+        reactApplicationContext.currentActivity?.let { a ->
+            a.runOnUiThread { a.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
+    }
+
     @ReactMethod fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
     @ReactMethod fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Double) {}
 
@@ -274,6 +289,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         val outName = params.getString("outName")!!
         val strokes = parseStrokes(params.getArray("strokes")!!)
         editCancelled = false
+        beginLongEdit("Removing")
         edits.execute {
             try {
                 val ctx = reactApplicationContext
@@ -327,6 +343,8 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
             } catch (e: Exception) {
                 val cancelled = editCancelled
                 safe.reject(if (cancelled) "EDIT_CANCELLED" else "EDIT_FAILED", if (cancelled) "Cancelled." else (e.message ?: "The edit failed."), e)
+            } finally {
+                endLongEdit()
             }
         }
     }
@@ -370,6 +388,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
             seed = baseSeed,
         )
         editCancelled = false
+        beginLongEdit(if (variations > 1) "Filling version 1 of $variations" else "Filling")
         edits.execute {
             val client = LocalDreamFillClient(port).also { fillClient = it }
             try {
@@ -382,14 +401,22 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
                 val dir = File(PhotoImporter.sessionsRoot(ctx), sessionId)
                 val results = Arguments.createArray()
                 var modelMs = 0L; var otherMs = 0L; var cropW = 0; var cropH = 0
+                val perVariation = Arguments.createArray()
                 for (v in 0 until variations) {
                     val seed = baseSeed + v * 7919L
+                    var firstStepAt = 0L; var lastStepAt = 0L; var stepsSeen = 0
                     val out = EditRenderer.applyRegion(
                         ctx, sourcePath, originalPath, strokes, dir, "${outName}_v$v",
                         // The SD server runs in its own process; keep a modest headroom for this one.
                         maxInputSize = LocalDreamFillClient.SIZE, sizeFor = { LocalDreamFillClient.SIZE },
+                        feather = RegionPipeline.FILL_FEATHER,
                     ) { crop, mask ->
                         client.inpaint(crop, mask, request.copy(seed = seed)) { step, total ->
+                            val now = System.currentTimeMillis()
+                            if (stepsSeen == 0) firstStepAt = now
+                            lastStepAt = now; stepsSeen++
+                            EditForegroundService.update(ctx,
+                                (if (variations > 1) "Version ${v + 1} of $variations, " else "") + "step $step of $total")
                             emit(EVENT_EDIT_PROGRESS, Arguments.createMap().apply {
                                 putInt("step", step); putInt("totalSteps", total)
                                 putInt("variation", v + 1); putInt("variations", variations)
@@ -401,6 +428,10 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
                         throw InterruptedException("Cancelled.")
                     }
                     modelMs += out.modelMs; otherMs += out.decodeMs + out.blendMs + out.encodeMs
+                    perVariation.pushMap(Arguments.createMap().apply {
+                        putDouble("modelMs", out.modelMs.toDouble())
+                        putDouble("msPerStep", if (stepsSeen > 1) (lastStepAt - firstStepAt).toDouble() / (stepsSeen - 1) else 0.0)
+                    })
                     cropW = out.cropW; cropH = out.cropH
                     results.pushMap(Arguments.createMap().apply {
                         putString("resultPath", out.resultPath)
@@ -410,6 +441,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
                 }
                 safe.resolve(Arguments.createMap().apply {
                     putArray("results", results)
+                    putArray("perVariation", perVariation)
                     putDouble("modelMs", modelMs.toDouble())
                     putDouble("otherMs", otherMs.toDouble())
                     putInt("cropWidth", cropW); putInt("cropHeight", cropH)
@@ -425,6 +457,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
                 else safe.reject("EDIT_FAILED", e.message ?: "Fill failed.", e)
             } finally {
                 fillClient = null
+                endLongEdit()
             }
         }
     }

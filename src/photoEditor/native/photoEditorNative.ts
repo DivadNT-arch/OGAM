@@ -94,6 +94,8 @@ interface FillParams {
 
 interface FillResult {
   results: { resultPath: string; previewPath: string; seed: number }[];
+  /** Model time and average seconds per step for each version (to spot throttling). */
+  perVariation: { modelMs: number; msPerStep: number }[];
   modelMs: number;
   otherMs: number;
   cropWidth: number;

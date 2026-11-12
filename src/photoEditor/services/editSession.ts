@@ -88,6 +88,14 @@ async function requestLocationAccess(): Promise<void> {
   } catch { /* editing still works; the saved copy just has no location */ }
 }
 
+async function requestNotificationPermission(): Promise<void> {
+  // The "Editing photo" notification keeps long edits at full speed; Android 13+ asks once to show it.
+  if (Platform.OS !== 'android' || (Platform.Version as number) < 33) return;
+  try {
+    await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+  } catch { /* the edit still runs */ }
+}
+
 async function discardFiles(session: EditSession | null): Promise<void> {
   if (session) await photoEditorNative().deleteSession(session.photo.sessionId).catch(() => false);
 }
@@ -201,6 +209,7 @@ export const editSession = {
     const session = get().session;
     if (!session) throw new Error('No photo is open.');
     set({ busy: 'preparing', progress: null });
+    await requestNotificationPermission();
     const started = Date.now();
     const off = onEditProgress(p => set({ progress: p }));
     try {
@@ -224,7 +233,14 @@ export const editSession = {
       recordTiming({
         operation: opts.variations > 1 ? `Fill x${opts.variations}` : 'Fill',
         durationMs: Date.now() - started,
-        detail: `${modelName}; crop ${result.cropWidth}x${result.cropHeight}; model ${result.modelMs} ms, other ${result.otherMs} ms; "${opts.prompt.slice(0, 40)}"`,
+        detail: [
+          modelName,
+          `crop ${result.cropWidth}x${result.cropHeight}`,
+          ...result.perVariation.map((v, i) =>
+            `v${i + 1} ${(v.modelMs / 1000).toFixed(0)} s (${(v.msPerStep / 1000).toFixed(1)} s/step)`),
+          `other ${result.otherMs} ms`,
+          `"${opts.prompt.slice(0, 40)}"`,
+        ].join('; '),
       });
       if (result.results.length === 1) {
         const [r] = result.results;

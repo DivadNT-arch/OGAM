@@ -136,6 +136,9 @@ object RegionPipeline {
     const val GRAIN_STRENGTH = 0.6f
     /** Larger tone differences are real content changes, not lighting drift; leave them alone. */
     const val MAX_TONE_SHIFT = 24
+    /** Edge softness as a fraction of the crop. Fill uses a wider edge: its new content rarely matches exactly. */
+    const val DEFAULT_FEATHER = 0.012f
+    const val FILL_FEATHER = 0.03f
 
     /**
      * Runs [model] on the painted region of [image] (mutable, raw orientation) and blends the
@@ -145,6 +148,7 @@ object RegionPipeline {
      */
     fun process(
         image: Bitmap, strokes: List<Stroke>, map: OrientationMap, sizeFor: (Int) -> Int,
+        feather: Float = DEFAULT_FEATHER,
         model: (crop: Bitmap, mask: Bitmap) -> Bitmap,
     ): Result {
         val timings = Timings()
@@ -176,7 +180,7 @@ object RegionPipeline {
         timings.modelMs = System.currentTimeMillis() - t
 
         t = System.currentTimeMillis()
-        blend(image, generated, Rect(0, 0, nw, nh), crop, strokes, toRaw, map.uprightW)
+        blend(image, generated, Rect(0, 0, nw, nh), crop, strokes, toRaw, map.uprightW, feather)
         generated.recycle()
         timings.blendMs = System.currentTimeMillis() - t
         return Result(crop, timings)
@@ -210,9 +214,10 @@ object RegionPipeline {
      */
     private fun blend(
         image: Bitmap, generated: Bitmap, src: Rect, crop: Rect, strokes: List<Stroke>, toRaw: Matrix, uprightW: Int,
+        featherFraction: Float,
     ) {
         val w = crop.width(); val h = crop.height()
-        val feather = max(2f, max(w, h) * 0.012f)
+        val feather = max(2f, max(w, h) * featherFraction)
         // Draw the mask small and scale it up with filtering: a cheap, smooth feather.
         val small = max(1f, feather / 2f)
         val sw = max(1, (w / small).roundToInt()); val sh = max(1, (h / small).roundToInt())

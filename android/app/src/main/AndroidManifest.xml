@@ -38,6 +38,8 @@
 
     <!-- Photo editor: read the original photo's location so a saved copy keeps it -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- Photo editor: keep long edits at full speed while the screen is off -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
       android:name=".MainApplication"
@@ -97,6 +99,15 @@
             <data android:mimeType="image/*" />
         </intent-filter>
       </activity>
+
+      <service
+        android:name=".photoeditor.EditForegroundService"
+        android:exported="false"
+        android:foregroundServiceType="specialUse">
+        <property
+          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="On-device photo editing with AI models that takes minutes" />
+      </service>
 
 <!-- Receiver for background download completion events -->
       <receiver

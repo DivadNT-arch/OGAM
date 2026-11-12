@@ -70,6 +70,7 @@ function setup(opts: { vae: boolean }) {
           resultPath: `/data/photo_editor/sessions/s1/${p.outName}_v${i}.jpg`,
           previewPath: `/data/photo_editor/sessions/s1/${p.outName}_v${i}_preview.jpg`, seed: p.seed + i,
         })),
+        perVariation: Array.from({ length: p.variations }, () => ({ modelMs: 95000, msPerStep: 4700 })),
         modelMs: 95000, otherMs: 900, cropWidth: 900, cropHeight: 900,
       };
     },
@@ -122,6 +123,7 @@ describe('photo editor: Fill', () => {
     }));
     expect(t.fillCalls[0].strength).toBeCloseTo(0.9);
     expect(t.useTimingLog.getState().entries[0].operation).toBe('Fill x3');
+    expect(t.useTimingLog.getState().entries[0].detail).toContain('v2 95 s (4.7 s/step)');
 
     t.fireEvent.press(view.getByTestId('variation-1'));
     expect(view.queryByTestId('variation-picker')).toBeNull();
