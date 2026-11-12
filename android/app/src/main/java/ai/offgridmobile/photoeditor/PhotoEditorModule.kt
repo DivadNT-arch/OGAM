@@ -50,6 +50,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     @Volatile private var lama: LamaEngine? = null
     @Volatile private var editCancelled = false
     @Volatile private var fillClient: LocalDreamFillClient? = null
+    @Volatile private var upscaler: UpscaleEngine? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -259,6 +260,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
             try {
                 val model = EditModels.byId(id)
                 if (lama != null && model.inputSize == lama?.size) { lama?.close(); lama = null }
+                if (model.id == EditModels.ESRGAN.id) { upscaler?.close(); upscaler = null }
                 EditModels.delete(reactApplicationContext, model)
                 safe.resolve(modelInfo(model))
             } catch (e: Exception) {
@@ -355,7 +357,90 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         editCancelled = true
         lama?.cancel()
         fillClient?.cancel()
+        upscaler?.cancel()
         promise.resolve(true)
+    }
+
+    /**
+     * Upscale: enlarges the whole current result by [factor] (2 or 4) with Real-ESRGAN, mixed with
+     * a plain enlargement by [detail]. Resolves with the new result file and its upright size.
+     */
+    @ReactMethod
+    fun applyUpscale(params: ReadableMap, promise: Promise) {
+        val safe = SafePromise(promise, NAME)
+        val sessionId = params.getString("sessionId")!!
+        val sourcePath = params.getString("sourcePath")!!
+        val originalPath = params.getString("originalPath")!!
+        val outName = params.getString("outName")!!
+        val factor = params.getInt("factor").let { if (it == 4) 4 else 2 }
+        val detail = params.getDouble("detail").toFloat()
+        editCancelled = false
+        beginLongEdit("Upscaling")
+        edits.execute {
+            val ctx = reactApplicationContext
+            try {
+                if (!EditModels.isInstalled(ctx, EditModels.ESRGAN)) {
+                    return@execute safe.reject("MODEL_MISSING", "Download the Upscale model first (Edit tab, Editing models).")
+                }
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(sourcePath, bounds)
+                val outPixels = bounds.outWidth.toLong() * factor * bounds.outHeight * factor
+                if (outPixels > UpscaleEngine.MAX_OUTPUT_PIXELS) {
+                    return@execute safe.reject("TOO_LARGE", "The result would be ${outPixels / 1_000_000} MP. The editor makes up to 64 MP; try 2x or a smaller photo.")
+                }
+                // LaMa is not needed now; free its memory before allocating the large output.
+                lama?.close(); lama = null
+                EditRenderer.checkMemory(ctx, bounds.outWidth, bounds.outHeight, outPixels * 4 + (400L shl 20))
+                val t0 = System.currentTimeMillis()
+                val engine = upscaler ?: UpscaleEngine(EditModels.file(ctx, EditModels.ESRGAN), threads = 4).also { upscaler = it }
+                val src = android.graphics.BitmapFactory.decodeFile(sourcePath, android.graphics.BitmapFactory.Options().apply {
+                    inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+                }) ?: throw IllegalStateException("Could not read the photo.")
+                val t1 = System.currentTimeMillis()
+                val out = try {
+                    engine.upscale(src, factor, detail) { done, total ->
+                        if (done == 1 || done == total || done % 4 == 0) {
+                            EditForegroundService.update(ctx, "Upscaling, tile $done of $total")
+                            emit(EVENT_EDIT_PROGRESS, Arguments.createMap().apply {
+                                putInt("step", done); putInt("totalSteps", total); putInt("variation", 1); putInt("variations", 1)
+                            })
+                        }
+                    }
+                } finally { src.recycle() }
+                val t2 = System.currentTimeMillis()
+                try {
+                    val dir = File(PhotoImporter.sessionsRoot(ctx), sessionId).apply { mkdirs() }
+                    val result = File(dir, "$outName.jpg")
+                    java.io.FileOutputStream(result).use { out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }
+                    val original = File(originalPath)
+                    PhotoSaver.copyExif(original, result)
+                    val orientation = PhotoImporter.orientationOf(original)
+                    val preview = File(dir, "${outName}_preview.jpg")
+                    PhotoImporter.writeUprightPreview(out, orientation, preview)
+                    val map = OrientationMap(out.width, out.height, orientation)
+                    safe.resolve(Arguments.createMap().apply {
+                        putString("resultPath", result.absolutePath)
+                        putString("previewPath", preview.absolutePath)
+                        putInt("width", map.uprightW); putInt("height", map.uprightH)
+                        putDouble("decodeMs", (t1 - t0).toDouble())
+                        putDouble("modelMs", (t2 - t1).toDouble())
+                        putDouble("encodeMs", (System.currentTimeMillis() - t2).toDouble())
+                        putInt("tiles", engine.tileCount(bounds.outWidth, bounds.outHeight))
+                    })
+                } finally { out.recycle() }
+            } catch (e: InterruptedException) {
+                safe.reject("EDIT_CANCELLED", "Cancelled.")
+            } catch (e: LowMemoryException) {
+                safe.reject("LOW_MEMORY", e.message ?: "Not enough free memory.")
+            } catch (e: OutOfMemoryError) {
+                safe.reject("LOW_MEMORY", "Ran out of memory while upscaling. Try 2x or close other apps.")
+            } catch (e: Exception) {
+                if (editCancelled) safe.reject("EDIT_CANCELLED", "Cancelled.")
+                else safe.reject("EDIT_FAILED", e.message ?: "Upscale failed.", e)
+            } finally {
+                endLongEdit()
+            }
+        }
     }
 
     /** Fill needs the image model's VAE encoder; older or NPU-only downloads may not have it. */
@@ -486,7 +571,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     override fun invalidate() {
         io.shutdown()
         downloads.shutdown()
-        edits.execute { lama?.close(); lama = null }
+        edits.execute { lama?.close(); lama = null; upscaler?.close(); upscaler = null }
         edits.shutdown()
         super.invalidate()
     }

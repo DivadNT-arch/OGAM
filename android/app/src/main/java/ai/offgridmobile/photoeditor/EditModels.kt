@@ -59,7 +59,21 @@ object EditModels {
         inputSize = 1024,
     )
 
-    val ALL = listOf(LAMA, LAMA_1024)
+    /** Real-ESRGAN general x4v3 (BSD-3), exported to ONNX; see the editing-models branch README. */
+    val ESRGAN = EditModel(
+        id = "esrgan",
+        name = "Real-ESRGAN (Upscale)",
+        license = "BSD-3-Clause",
+        fileName = "realesr_general_x4v3.onnx",
+        parts = listOf(ModelPart(
+            "https://raw.githubusercontent.com/DivadNT-arch/OGAM/f4c23b5ddca7d308eab36fef4fa2d64e6f36f84c/esrgan/realesr_general_x4v3.onnx",
+            4_866_396L,
+        )),
+        sha256 = "3439a9e4cd26c4cdfff28f82f00411a7a4f06e7f72a1efdc664479f1e2bf0690",
+        inputSize = 0,
+    )
+
+    val ALL = listOf(LAMA, LAMA_1024, ESRGAN)
 
     fun byId(id: String): EditModel = ALL.firstOrNull { it.id == id } ?: throw IllegalArgumentException("Unknown model $id")
 
