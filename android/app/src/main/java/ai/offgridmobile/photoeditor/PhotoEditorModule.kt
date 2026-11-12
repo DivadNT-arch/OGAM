@@ -29,6 +29,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         const val NAME = "PhotoEditorModule"
         const val EVENT_SHARE = "PhotoEditorShareReceived"
         const val EVENT_MODEL_PROGRESS = "PhotoEditorModelProgress"
+        const val EVENT_EDIT_PROGRESS = "PhotoEditorEditProgress"
         private const val PICK_REQUEST = 42_017
         private var active: WeakReference<PhotoEditorModule>? = null
         /** Crops with a longer side than this use the 1024 model if it is downloaded. */
@@ -48,6 +49,7 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     /** Loaded LaMa engines by input size. Only one is kept at a time to bound memory. */
     @Volatile private var lama: LamaEngine? = null
     @Volatile private var editCancelled = false
+    @Volatile private var fillClient: LocalDreamFillClient? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -204,10 +206,21 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
         val model = try { EditModels.byId(id) } catch (e: Exception) { return safe.reject("UNKNOWN_MODEL", e.message ?: id) }
         downloads.execute {
             try {
-                EditModels.download(reactApplicationContext, model) { done, total ->
-                    emit(EVENT_MODEL_PROGRESS, Arguments.createMap().apply {
-                        putString("id", id); putDouble("bytesDone", done.toDouble()); putDouble("bytesTotal", total.toDouble())
-                    })
+                // Phone connections drop; each retry resumes from where the last one stopped.
+                var attempt = 0
+                while (true) {
+                    try {
+                        EditModels.download(reactApplicationContext, model) { done, total ->
+                            emit(EVENT_MODEL_PROGRESS, Arguments.createMap().apply {
+                                putString("id", id); putDouble("bytesDone", done.toDouble()); putDouble("bytesTotal", total.toDouble())
+                            })
+                        }
+                        break
+                    } catch (e: java.io.IOException) {
+                        attempt++
+                        if (attempt >= 4) throw e
+                        Thread.sleep(2000L shl attempt) // 4 s, 8 s, 16 s
+                    }
                 }
                 safe.resolve(modelInfo(model))
             } catch (e: InterruptedException) {
@@ -322,7 +335,98 @@ class PhotoEditorModule(reactContext: ReactApplicationContext) :
     fun cancelEdit(promise: Promise) {
         editCancelled = true
         lama?.cancel()
+        fillClient?.cancel()
         promise.resolve(true)
+    }
+
+    /** Fill needs the image model's VAE encoder; older or NPU-only downloads may not have it. */
+    @ReactMethod
+    fun checkFillModel(modelPath: String, promise: Promise) {
+        io.execute { promise.resolve(LocalDreamFillClient.hasVaeEncoder(modelPath)) }
+    }
+
+    /**
+     * Fill: regenerates the painted area from a prompt with the loaded Stable Diffusion model
+     * (local-dream server). Makes [variations] results with different seeds; resolves with a
+     * list of {resultPath, previewPath, seed}.
+     */
+    @ReactMethod
+    fun applyFill(params: ReadableMap, promise: Promise) {
+        val safe = SafePromise(promise, NAME)
+        val sessionId = params.getString("sessionId")!!
+        val sourcePath = params.getString("sourcePath")!!
+        val originalPath = params.getString("originalPath")!!
+        val outName = params.getString("outName")!!
+        val strokes = parseStrokes(params.getArray("strokes")!!)
+        val variations = params.getInt("variations").coerceIn(1, 4)
+        val baseSeed = params.getDouble("seed").toLong()
+        val port = params.getInt("port")
+        val request = FillRequest(
+            prompt = params.getString("prompt") ?: "",
+            negativePrompt = params.getString("negativePrompt") ?: "",
+            strength = params.getDouble("strength").toFloat().coerceIn(0.05f, 1f),
+            steps = params.getInt("steps").coerceIn(4, 50),
+            guidance = params.getDouble("guidance").toFloat(),
+            seed = baseSeed,
+        )
+        editCancelled = false
+        edits.execute {
+            val client = LocalDreamFillClient(port).also { fillClient = it }
+            try {
+                if (!client.isServerUp()) {
+                    return@execute safe.reject("ENGINE_NOT_READY", "The image model is not loaded. Try again.")
+                }
+                // LaMa is not needed while Stable Diffusion runs; free its memory.
+                lama?.close(); lama = null
+                val ctx = reactApplicationContext
+                val dir = File(PhotoImporter.sessionsRoot(ctx), sessionId)
+                val results = Arguments.createArray()
+                var modelMs = 0L; var otherMs = 0L; var cropW = 0; var cropH = 0
+                for (v in 0 until variations) {
+                    val seed = baseSeed + v * 7919L
+                    val out = EditRenderer.applyRegion(
+                        ctx, sourcePath, originalPath, strokes, dir, "${outName}_v$v",
+                        // The SD server runs in its own process; keep a modest headroom for this one.
+                        maxInputSize = LocalDreamFillClient.SIZE, sizeFor = { LocalDreamFillClient.SIZE },
+                    ) { crop, mask ->
+                        client.inpaint(crop, mask, request.copy(seed = seed)) { step, total ->
+                            emit(EVENT_EDIT_PROGRESS, Arguments.createMap().apply {
+                                putInt("step", step); putInt("totalSteps", total)
+                                putInt("variation", v + 1); putInt("variations", variations)
+                            })
+                        }
+                    }
+                    if (editCancelled) {
+                        File(out.resultPath).delete(); File(out.previewPath).delete()
+                        throw InterruptedException("Cancelled.")
+                    }
+                    modelMs += out.modelMs; otherMs += out.decodeMs + out.blendMs + out.encodeMs
+                    cropW = out.cropW; cropH = out.cropH
+                    results.pushMap(Arguments.createMap().apply {
+                        putString("resultPath", out.resultPath)
+                        putString("previewPath", out.previewPath)
+                        putDouble("seed", seed.toDouble())
+                    })
+                }
+                safe.resolve(Arguments.createMap().apply {
+                    putArray("results", results)
+                    putDouble("modelMs", modelMs.toDouble())
+                    putDouble("otherMs", otherMs.toDouble())
+                    putInt("cropWidth", cropW); putInt("cropHeight", cropH)
+                })
+            } catch (e: InterruptedException) {
+                safe.reject("EDIT_CANCELLED", "Cancelled.")
+            } catch (e: LowMemoryException) {
+                safe.reject("LOW_MEMORY", e.message ?: "Not enough free memory.")
+            } catch (e: OutOfMemoryError) {
+                safe.reject("LOW_MEMORY", "Ran out of memory during the edit. Close other apps and try again.")
+            } catch (e: Exception) {
+                if (editCancelled) safe.reject("EDIT_CANCELLED", "Cancelled.")
+                else safe.reject("EDIT_FAILED", e.message ?: "Fill failed.", e)
+            } finally {
+                fillClient = null
+            }
+        }
     }
 
     /** Frees the editing model's memory (called before loading something big elsewhere). */
