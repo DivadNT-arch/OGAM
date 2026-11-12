@@ -2,6 +2,30 @@
 
 Running log for the photo-editor fork (branch `feature/photo-editor`, based on upstream v0.0.103).
 
+## Phase 3: Fill (2026-11-12)
+
+**What was built**
+- **Fill:** paint an area, describe what should be there, and Stable Diffusion repaints it. The sheet has:
+  - a prompt box and an "Avoid" (negative prompt) box
+  - a strength slider (30–100%, default 90%)
+  - 1 or 3 versions
+- **Version picker:** with 3 versions, the editor shows them side by side and you tap the one to keep (or keep none).
+- **Step progress** while it runs ("Version 2 of 3, step 7 of 20") and **Cancel**.
+- Model downloads (LaMa) retry by themselves up to 4 times (waiting 4, 8 and 16 s) and resume where they stopped.
+
+**How it works**
+- Fill uses Off Grid's own image model and engine. `prepareFillEngine` picks the downloaded CPU/GPU (MNN) model, checks that it has `vae_encoder.mnn` (inpainting needs it; without it the editor says so plainly), and loads it through Off Grid's `activeModelService`, the same path chat image generation uses.
+- The native side (`LocalDreamFillClient.kt`) sends inpainting requests to the local-dream server that Off Grid's `LocalDreamModule` already runs on `127.0.0.1`. The request carries the 512 crop and mask as base64 PNGs, plus `denoise_strength`. This needs no changes to upstream code. The request format was checked against local-dream's source at the version that matches the bundled binary.
+- Every version goes through the crop, process and paste-back pipeline. That covers shape-keeping crops, mirror padding, grown paint, feathered blending, and tone and grain matching, so a small fill in a 48 MP photo stays full resolution outside the painted area.
+- Steps: 20, guidance 7.5, DPM scheduler, CPU (the GPU path doesn't work on this phone, see Phase 0).
+
+**Tests:** `photoEditorFill.test.tsx` runs Off Grid's real model service against the harness's faked diffusion engine and file system, so it covers the integrity and memory checks and the model load. It checks the prompt, strength, versions, the picker, and the "no VAE encoder" message.
+
+**Known gaps**
+- About 1–2 minutes per version on the phone's CPU, as measured in Phase 0.
+- "Enhance prompt" (rewriting the prompt with the chat model) isn't done yet.
+- Fill is limited to 512 x 512 per run: large areas lose detail, like LaMa 512 did. Upscale (Phase 4) will help.
+
 ## Phase 2b: sharper Remove on large areas (2026-11-10)
 
 **The problem:** removing a folding chair (about a third of a 12 MP photo, over striped carpet) left a smeared ghost.
